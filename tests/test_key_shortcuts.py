@@ -1,4 +1,10 @@
-from chess_labeler.key_shortcuts import HAND_CLASS, ROLE_BY_LETTER, resolve_piece_class
+from chess_labeler.key_shortcuts import (
+    CLASS_DISPLAY_ORDER,
+    HAND_CLASS,
+    ROLE_BY_LETTER,
+    display_label_for_class,
+    resolve_piece_class,
+)
 
 
 def test_all_role_letters_lowercase_are_black():
@@ -47,3 +53,34 @@ def test_role_table_has_exactly_the_seven_spec_letters():
 
 def test_hand_class_constant():
     assert HAND_CLASS == "hand"
+
+
+def test_display_label_uses_lowercase_letter_regardless_of_color():
+    assert display_label_for_class("black_rook") == "r"
+    assert display_label_for_class("red_rook") == "r"
+    assert display_label_for_class("black_cannon") == "c"
+    assert display_label_for_class("red_king") == "k"
+
+
+def test_display_label_for_hand_is_the_word_hand():
+    assert display_label_for_class("hand") == "hand"
+
+
+def test_display_label_empty_for_unassigned_or_unknown():
+    assert display_label_for_class(None) == ""
+    assert display_label_for_class("") == ""
+    assert display_label_for_class("not_a_real_class") == ""
+
+
+def test_class_display_order_has_all_15_classes_black_then_red_then_hand():
+    assert len(CLASS_DISPLAY_ORDER) == 15
+    assert len(set(CLASS_DISPLAY_ORDER)) == 15  # no duplicates
+    assert CLASS_DISPLAY_ORDER[:7] == [
+        "black_pawn", "black_rook", "black_cannon", "black_horse",
+        "black_elephant", "black_advisor", "black_king",
+    ]
+    assert CLASS_DISPLAY_ORDER[7:14] == [
+        "red_pawn", "red_rook", "red_cannon", "red_horse",
+        "red_elephant", "red_advisor", "red_king",
+    ]
+    assert CLASS_DISPLAY_ORDER[14] == "hand"

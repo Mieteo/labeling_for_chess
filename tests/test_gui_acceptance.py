@@ -8,7 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from PySide6.QtCore import QEvent, QRectF, Qt
+from PySide6.QtCore import QEvent, QRectF, QSettings, Qt
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QMessageBox
@@ -36,8 +36,17 @@ def qapp():
 
 
 @pytest.fixture
-def main_window(qapp):
-    win = MainWindow()
+def isolated_settings(tmp_path):
+    """A QSettings backed by a throwaway ini file -- MainWindow persists the
+    last-opened directory (see labeling_tool_requirements.md section 5
+    update) via QSettings, which defaults to the real Windows registry.
+    Tests must never touch that real, machine-wide key."""
+    return QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+
+
+@pytest.fixture
+def main_window(qapp, isolated_settings):
+    win = MainWindow(settings=isolated_settings)
     yield win
     # Teardown just disposes of the Qt object -- never let a leftover dirty/
     # unclassified-box state pop a blocking QMessageBox (closeEvent ->
@@ -52,6 +61,33 @@ def _index_of(win: MainWindow, name: str) -> int:
         if p.name == name:
             return i
     raise AssertionError(f"{name} not found in {win._images}")
+
+
+def test_reopening_app_auto_opens_last_used_folder(qapp, isolated_settings, labelimg_dataset):
+    win1 = MainWindow(settings=isolated_settings)
+    win1._open_directory(labelimg_dataset)
+    win1.close()
+    qapp.removeEventFilter(win1)
+
+    win2 = MainWindow(settings=isolated_settings)  # simulates relaunching the app
+    assert win2._image_dir == labelimg_dataset
+    win2.close()
+    qapp.removeEventFilter(win2)
+
+
+def test_fresh_app_with_no_saved_folder_opens_nothing(qapp, isolated_settings):
+    win = MainWindow(settings=isolated_settings)
+    assert win._image_dir is None
+    win.close()
+    qapp.removeEventFilter(win)
+
+
+def test_stale_saved_folder_that_no_longer_exists_is_ignored(qapp, isolated_settings, tmp_path):
+    isolated_settings.setValue("last_image_dir", str(tmp_path / "deleted_folder"))
+    win = MainWindow(settings=isolated_settings)  # must not crash on a missing directory
+    assert win._image_dir is None
+    win.close()
+    qapp.removeEventFilter(win)
 
 
 def test_open_directory_resumes_at_first_unlabeled_image(main_window, labelimg_dataset):
@@ -124,8 +160,8 @@ def test_save_round_trip_and_suggestions_excluded(main_window, labelimg_dataset)
     assert len(saved_again) == 1
 
 
-def test_resume_advances_after_labeling_a_fresh_window(qapp, labelimg_dataset):
-    win1 = MainWindow()
+def test_resume_advances_after_labeling_a_fresh_window(qapp, isolated_settings, labelimg_dataset):
+    win1 = MainWindow(settings=isolated_settings)
     win1._open_directory(labelimg_dataset)
     box = win1._canvas.add_box_item(QRectF(10, 10, 20, 20), class_name=None, confirmed=True, select=True)
     _press_letter(win1._canvas, Qt.Key.Key_P, "p")
@@ -134,7 +170,7 @@ def test_resume_advances_after_labeling_a_fresh_window(qapp, labelimg_dataset):
     win1.close()
     qapp.removeEventFilter(win1)
 
-    win2 = MainWindow()
+    win2 = MainWindow(settings=isolated_settings)
     win2._open_directory(labelimg_dataset)
     assert win2._current_image_path.name == "0006.jpg"
     win2.close()

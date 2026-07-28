@@ -10,9 +10,19 @@ from PySide6.QtWidgets import QListWidget, QListWidgetItem, QVBoxLayout, QWidget
 
 from . import yolo_io
 from .canvas import BoxItem, class_color
+from .key_shortcuts import CLASS_DISPLAY_ORDER
 
 _LABELED_COLOR = QColor(46, 125, 50)
 _UNLABELED_COLOR = QColor(130, 130, 130)
+
+_CLASS_SORT_INDEX = {name: i for i, name in enumerate(CLASS_DISPLAY_ORDER)}
+_UNASSIGNED_SORT_INDEX = len(CLASS_DISPLAY_ORDER)  # unassigned boxes sort last
+
+
+def _box_sort_key(box: BoxItem) -> int:
+    if not box.class_name:
+        return _UNASSIGNED_SORT_INDEX
+    return _CLASS_SORT_INDEX.get(box.class_name, _UNASSIGNED_SORT_INDEX)
 
 
 class FileListPanel(QWidget):
@@ -90,7 +100,10 @@ class BoxListPanel(QWidget):
         self._items: list[BoxItem] = []
 
     def set_boxes(self, boxes: list[BoxItem]) -> None:
-        self._items = list(boxes)
+        # Grouped by class in a fixed mnemonic order (see CLASS_DISPLAY_ORDER):
+        # black pieces, then red, then hand, with not-yet-labeled boxes last.
+        # sorted() is stable, so boxes sharing a class keep their relative order.
+        self._items = sorted(boxes, key=_box_sort_key)
         self._list.clear()
         for box in self._items:
             label = box.class_name or "(chưa gán lớp)"

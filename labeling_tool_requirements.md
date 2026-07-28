@@ -138,7 +138,13 @@ buộc của tool mới.
   định sẵn, không gõ tay tên lớp để tránh lỗi chính tả sinh lớp lạ).
 - **Danh sách box của ảnh hiện tại**: panel liệt kê toàn bộ box đã vẽ trên
   ảnh đang mở kèm tên lớp, click một dòng để highlight box tương ứng trên
-  ảnh.
+  ảnh. (Cập nhật 29/07/2026: danh sách được **nhóm theo lớp** theo thứ tự cố
+  định `p, r, c, h, e, a, k` (đen) rồi `P, R, C, H, E, A, K` (đỏ) rồi `hand`
+  — xem `key_shortcuts.CLASS_DISPLAY_ORDER`; box **chưa gán lớp** luôn nằm
+  **dưới cùng**. Trên ảnh, mỗi box cũng có một nhãn chữ nhỏ in đậm ở tâm
+  — nền trắng, 1 chữ cái vai trò viết thường (hoặc chữ "hand"), màu chữ đen
+  hoặc đỏ theo màu quân — box chưa gán lớp chỉ có ô nền trắng trống, không
+  chữ.)
 - **Điều hướng ảnh**: phím tắt ảnh kế tiếp / ảnh trước, giữ nguyên toàn bộ
   box đang vẽ dở khi chuyển ảnh (hoặc cảnh báo nếu có thay đổi chưa lưu).
 - **Lưu**: phím tắt lưu ảnh hiện tại (ghi `<tên>.txt`); nên có tuỳ chọn
@@ -296,6 +302,15 @@ dừng ở ảnh nào):
   (không phải chỉ dữ liệu tool mới tự tạo) và tiếp tục đúng mạch, vì đây là
   tình huống thực tế: một phần đã làm bằng labelImg, phần còn lại chuyển
   sang tool mới.
+
+**Cập nhật 29/07/2026 — nhớ thư mục đang làm việc giữa các lần chạy tool**:
+khác với file trạng thái phiên ở trên (theo từng thư mục ảnh, đi theo thư
+mục khi copy sang máy khác), đây là một preference **theo máy** (đường dẫn
+thư mục chỉ có ý nghĩa trên chính máy đó) — lưu ở `QSettings` (registry
+Windows, khoá `ChessLabeler/XiangqiLabeler`), không phải trong thư mục
+ảnh. Mỗi lần mở thư mục thành công (dù qua dialog hay tự động resume), tool
+ghi lại đường dẫn; mỗi lần khởi động, tool đọc lại và tự mở đúng thư mục đó
+nếu vẫn còn tồn tại (bỏ qua lặng lẽ nếu thư mục đã bị xoá/di chuyển).
 
 ## 6. Yêu cầu phi chức năng
 

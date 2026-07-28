@@ -10,7 +10,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from PySide6.QtCore import QEvent, QRectF, Qt
+from PySide6.QtCore import QEvent, QRectF, QSettings, Qt
 from PySide6.QtGui import QAction, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -43,6 +43,12 @@ _ROLE_KEY_CODES = {
     Qt.Key.Key_K: "K",
 }
 
+# QSettings key for the last opened image directory -- app-level machine
+# preference (see labeling_tool_requirements.md section 5 update), distinct
+# from the per-folder ".labeling_session.json" (session.py), which is about
+# labeling progress and travels with the folder across machines.
+_LAST_DIR_SETTINGS_KEY = "last_image_dir"
+
 
 @dataclasses.dataclass(frozen=True)
 class _BoxSnapshot:
@@ -60,10 +66,13 @@ def _read_image_bgr(path: Path) -> np.ndarray | None:
 
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, settings: QSettings | None = None):
         super().__init__()
         self.setWindowTitle("Xiangqi Labeler")
         self.resize(1440, 920)
+
+        self._app_settings = settings if settings is not None else QSettings("ChessLabeler", "XiangqiLabeler")
+        self._shown_once = False
 
         self._image_dir: Path | None = None
         self._classes: list[str] = []
@@ -100,6 +109,12 @@ class MainWindow(QMainWindow):
 
         self._update_window_title()
         self._update_undo_redo_actions()
+        self._resume_last_directory()
+
+    def _resume_last_directory(self) -> None:
+        last_dir = self._app_settings.value(_LAST_DIR_SETTINGS_KEY, "", type=str)
+        if last_dir and Path(last_dir).is_dir():
+            self._open_directory(Path(last_dir))
 
     # ------------------------------------------------------------------
     # UI construction
@@ -252,6 +267,7 @@ class MainWindow(QMainWindow):
 
     def _open_directory(self, directory: Path) -> None:
         self._image_dir = directory
+        self._app_settings.setValue(_LAST_DIR_SETTINGS_KEY, str(directory))
         self._classes = yolo_io.load_or_create_classes(directory)
         self._images = yolo_io.list_images(directory)
 
@@ -438,6 +454,10 @@ class MainWindow(QMainWindow):
 
     def _refresh_box_list(self) -> None:
         self._box_list_panel.set_boxes(self._canvas.box_items())
+        # Rebuilding the list drops its old row selection -- since boxes are
+        # now grouped/sorted by class, a box can also change row entirely
+        # right after being assigned a class, so re-sync the highlight.
+        self._box_list_panel.select_box(self._canvas.selected_box())
 
     # ------------------------------------------------------------------
     # Undo / redo (per-image snapshot stacks)
@@ -677,6 +697,17 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Đã gán lớp: {class_name}", 1200)
 
     # ------------------------------------------------------------------
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        if not self._shown_once:
+            # An image can get loaded (e.g. via _resume_last_directory, run
+            # from __init__) before the window is ever shown, while the
+            # canvas viewport still has its pre-layout placeholder size --
+            # fit_to_window computed then would zoom to that wrong size.
+            # Redo it once real geometry exists, the first time we're shown.
+            self._shown_once = True
+            self._canvas.fit_to_window()
+
     def closeEvent(self, event) -> None:  # noqa: N802
         if self._confirm_leave_current_image():
             event.accept()

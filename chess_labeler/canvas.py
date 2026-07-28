@@ -11,7 +11,7 @@ from enum import Enum, auto
 from typing import Callable
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QPainter, QPen, QPixmap
+from PySide6.QtGui import QBrush, QColor, QFont, QFontMetricsF, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QGraphicsItem,
     QGraphicsPixmapItem,
@@ -23,7 +23,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .key_shortcuts import display_label_for_class
+
 HANDLE_SCREEN_SIZE = 9.0  # px, kept constant on screen regardless of zoom
+LABEL_FONT_SCREEN_PX = 11.0  # class-label glyph size, kept constant on screen
+LABEL_PADDING_SCREEN_PX = 3.0
 MIN_DRAG_PX = 3
 
 _PALETTE_BY_NAME = {
@@ -53,6 +57,20 @@ def class_color(name: str | None) -> QColor:
     if name in _PALETTE_BY_NAME:
         return _PALETTE_BY_NAME[name]
     return _FALLBACK_COLORS[hash(name) % len(_FALLBACK_COLORS)]
+
+
+_LABEL_TEXT_RED = _PALETTE_BY_NAME["red_king"]
+_LABEL_TEXT_BLACK = QColor(0, 0, 0)
+
+
+def _label_text_color(class_name: str | None) -> QColor:
+    """Text color for the in-box class glyph: red for a red_* class, black
+    otherwise (black pieces, `hand`, or anything unrecognized) -- color
+    alone needs to carry red/black since the glyph itself is always
+    lowercase (see key_shortcuts.display_label_for_class)."""
+    if class_name and class_name.startswith("red_"):
+        return _LABEL_TEXT_RED
+    return _LABEL_TEXT_BLACK
 
 
 class Handle(Enum):
@@ -135,7 +153,27 @@ class BoxItem(QGraphicsRectItem):
 
     def boundingRect(self) -> QRectF:  # noqa: N802 (Qt override)
         s = self.handle_scene_size()
-        return self.rect().adjusted(-s, -s, s, s)
+        return self.rect().adjusted(-s, -s, s, s).united(self._label_patch_rect())
+
+    def _label_font(self) -> QFont:
+        inv_scale = self.handle_scene_size() / HANDLE_SCREEN_SIZE
+        font = QFont()
+        font.setPixelSize(max(1, round(LABEL_FONT_SCREEN_PX * inv_scale)))
+        font.setBold(True)
+        return font
+
+    def _label_patch_rect(self) -> QRectF:
+        """Small white patch centered on the box showing its class glyph --
+        always present (even with no text yet) so an unlabeled box still
+        has a visible, blank "label slot" at its center."""
+        metrics = QFontMetricsF(self._label_font())
+        pad = LABEL_PADDING_SCREEN_PX * (self.handle_scene_size() / HANDLE_SCREEN_SIZE)
+        text = display_label_for_class(self.class_name)
+        text_height = metrics.height()
+        text_width = metrics.horizontalAdvance(text) if text else text_height
+        patch = QRectF(0, 0, text_width + 2 * pad, text_height + 2 * pad)
+        patch.moveCenter(self.rect().center())
+        return patch
 
     def paint(self, painter: QPainter, option: QStyleOptionGraphicsItem, widget: QWidget | None = None) -> None:  # noqa: N802
         color = class_color(self.class_name)
@@ -151,6 +189,20 @@ class BoxItem(QGraphicsRectItem):
             painter.setBrush(QBrush(color))
             for h_rect in self._handle_rects().values():
                 painter.drawRect(h_rect)
+
+        self._paint_class_label(painter)
+
+    def _paint_class_label(self, painter: QPainter) -> None:
+        patch = self._label_patch_rect()
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(QColor(255, 255, 255)))
+        painter.drawRect(patch)
+
+        text = display_label_for_class(self.class_name)
+        if text:
+            painter.setFont(self._label_font())
+            painter.setPen(_label_text_color(self.class_name))
+            painter.drawText(patch, Qt.AlignmentFlag.AlignCenter, text)
 
     def hoverMoveEvent(self, event) -> None:  # noqa: N802
         if self.isSelected():

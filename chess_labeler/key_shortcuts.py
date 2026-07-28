@@ -40,3 +40,32 @@ def resolve_piece_class(letter: str, is_red: bool) -> str | None:
     if role is None:
         return None
     return f"{'red' if is_red else 'black'}_{role}"
+
+
+_LETTER_BY_ROLE = {role: letter.lower() for letter, role in ROLE_BY_LETTER.items()}
+
+
+def display_label_for_class(class_name: str | None) -> str:
+    """Short glyph drawn inside a box to show its assigned class: the same
+    lowercase role letter used for the keyboard shortcut (color alone
+    conveys red/black, so the glyph itself never needs to be uppercase),
+    or the literal word "hand" for the colorless occlusion class. Empty
+    string for an unassigned or unrecognized class name."""
+    if not class_name:
+        return ""
+    if class_name == HAND_CLASS:
+        return HAND_CLASS
+    _, _, role = class_name.partition("_")
+    return _LETTER_BY_ROLE.get(role, "")
+
+
+# Display order for the "boxes in this image" panel: black pieces first (in
+# this fixed role order), then red, then the colorless `hand` class, with
+# unassigned boxes sorted separately (below all of these -- see panels.py).
+CLASS_DISPLAY_ORDER: list[str] = [
+    "black_pawn", "black_rook", "black_cannon", "black_horse",
+    "black_elephant", "black_advisor", "black_king",
+    "red_pawn", "red_rook", "red_cannon", "red_horse",
+    "red_elephant", "red_advisor", "red_king",
+    HAND_CLASS,
+]
