@@ -1,5 +1,5 @@
-"""Main application window: wires the canvas, side panels, chord shortcuts,
-circle-detect assist, and file I/O together. See
+"""Main application window: wires the canvas, side panels, class-assignment
+shortcuts, circle-detect assist, and file I/O together. See
 labeling_tool_requirements.md for the full behavioral spec this implements.
 """
 
@@ -10,7 +10,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from PySide6.QtCore import QEvent, QRectF, Qt, QTimer
+from PySide6.QtCore import QEvent, QRectF, Qt
 from PySide6.QtGui import QAction, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -19,7 +19,6 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
-    QLabel,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -30,11 +29,19 @@ from PySide6.QtWidgets import (
 
 from . import circle_detect, session, yolo_io
 from .canvas import BoxItem, CanvasMode, ImageCanvas
-from .chord import ChordOutcome, ChordShortcutManager
 from .constants import DEFAULT_RADIUS_TOLERANCE_PCT
+from .key_shortcuts import HAND_CLASS, resolve_piece_class
 from .panels import BoxListPanel, FileListPanel
 
-_CHORD_LETTER_KEYS = {"R", "B", "K", "A", "E", "H", "C", "P"}
+_ROLE_KEY_CODES = {
+    Qt.Key.Key_P: "P",
+    Qt.Key.Key_C: "C",
+    Qt.Key.Key_R: "R",
+    Qt.Key.Key_H: "H",
+    Qt.Key.Key_E: "E",
+    Qt.Key.Key_A: "A",
+    Qt.Key.Key_K: "K",
+}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -71,7 +78,6 @@ class MainWindow(QMainWindow):
         self._pending_drag_snapshot: list[_BoxSnapshot] | None = None
 
         self._reference_radius_px: float | None = None
-        self._chord = ChordShortcutManager()
 
         self._canvas = ImageCanvas(self)
         self.setCentralWidget(self._canvas)
@@ -87,13 +93,6 @@ class MainWindow(QMainWindow):
         self._build_dock_panels()
         self._build_toolbar_and_actions()
         self.setStatusBar(QStatusBar(self))
-        self._chord_indicator = QLabel("")
-        self._chord_indicator.setStyleSheet("font-weight: bold; color: #d81b60; padding: 0 8px;")
-        self.statusBar().addPermanentWidget(self._chord_indicator)
-
-        self._chord_timer = QTimer(self)
-        self._chord_timer.timeout.connect(self._on_chord_timer)
-        self._chord_timer.start(250)
 
         app = QApplication.instance()
         if app is not None:
@@ -183,13 +182,13 @@ class MainWindow(QMainWindow):
 
         toolbar.addSeparator()
 
-        prev_action = QAction("Ảnh trước (A)", self)
-        prev_action.setShortcut(QKeySequence("A"))
+        prev_action = QAction("Ảnh trước (←)", self)
+        prev_action.setShortcut(QKeySequence(Qt.Key.Key_Left))
         prev_action.triggered.connect(self.prev_image)
         toolbar.addAction(prev_action)
 
-        next_action = QAction("Ảnh sau (D)", self)
-        next_action.setShortcut(QKeySequence("D"))
+        next_action = QAction("Ảnh sau (→)", self)
+        next_action.setShortcut(QKeySequence(Qt.Key.Key_Right))
         next_action.triggered.connect(self.next_image)
         toolbar.addAction(next_action)
 
@@ -636,45 +635,38 @@ class MainWindow(QMainWindow):
         self._refresh_box_list()
 
     # ------------------------------------------------------------------
-    # Chord shortcuts (global key event filter)
+    # Class-assignment shortcuts (global key event filter)
     # ------------------------------------------------------------------
     def eventFilter(self, obj, event) -> bool:  # noqa: N802
         if event.type() == QEvent.Type.KeyPress:
             key = event.key()
-            if key == Qt.Key.Key_Escape:
-                ev = self._chord.escape_pressed()
-                if ev.outcome != ChordOutcome.IGNORED:
-                    self._handle_chord_event(ev)
+            modifiers = event.modifiers()
+            ctrl_held = bool(modifiers & Qt.KeyboardModifier.ControlModifier)
+            other_modifiers_held = bool(
+                modifiers & (Qt.KeyboardModifier.AltModifier | Qt.KeyboardModifier.MetaModifier)
+            )
+
+            # `hand` has no color, so it keeps its own Ctrl+H shortcut --
+            # none of the 7 role letters is free for it (H is "horse").
+            if key == Qt.Key.Key_H and ctrl_held and not other_modifiers_held:
+                self._assign_class_to_selected(HAND_CLASS)
+                return True
+
+            if key in _ROLE_KEY_CODES and not ctrl_held and not other_modifiers_held:
+                # Case carries the color: lowercase = black, UPPERCASE
+                # (Caps Lock or Shift) = red. event.text() reflects the
+                # OS's Caps-Lock-aware translation; event.modifiers()
+                # would not (Caps Lock isn't a Qt modifier flag).
+                class_name = resolve_piece_class(_ROLE_KEY_CODES[key], is_red=event.text().isupper())
+                if class_name is not None:
+                    self._assign_class_to_selected(class_name)
                     return True
-                return False
-            if Qt.Key.Key_A <= key <= Qt.Key.Key_Z:
-                letter = chr(key)
-                ctrl_held = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
-                if letter in _CHORD_LETTER_KEYS and (ctrl_held or self._chord.is_pending):
-                    ev = self._chord.key_pressed(letter, ctrl_held)
-                    if ev.outcome != ChordOutcome.IGNORED:
-                        self._handle_chord_event(ev)
-                        return True
         return super().eventFilter(obj, event)
 
-    def _handle_chord_event(self, ev) -> None:
-        if ev.outcome == ChordOutcome.PENDING:
-            self._chord_indicator.setText(ev.pending_label or "")
-        elif ev.outcome == ChordOutcome.CANCELLED:
-            self._chord_indicator.setText("")
-        elif ev.outcome == ChordOutcome.ASSIGNED:
-            self._chord_indicator.setText("")
-            self._assign_class_to_selected(ev.class_name)
-
-    def _on_chord_timer(self) -> None:
-        ev = self._chord.check_timeout()
-        if ev.outcome == ChordOutcome.CANCELLED:
-            self._chord_indicator.setText("")
-
-    def _assign_class_to_selected(self, class_name: str | None) -> None:
+    def _assign_class_to_selected(self, class_name: str) -> None:
         box = self._canvas.selected_box()
         if box is None:
-            self.statusBar().showMessage("Không có box nào đang chọn -- chord bị bỏ qua.", 2000)
+            self.statusBar().showMessage("Không có box nào đang chọn -- bỏ qua phím tắt gán lớp.", 2000)
             return
         self._push_undo(self._snapshot())
         box.class_name = class_name
@@ -682,6 +674,7 @@ class MainWindow(QMainWindow):
         box.update()
         self._mark_dirty()
         self._refresh_box_list()
+        self.statusBar().showMessage(f"Đã gán lớp: {class_name}", 1200)
 
     # ------------------------------------------------------------------
     def closeEvent(self, event) -> None:  # noqa: N802

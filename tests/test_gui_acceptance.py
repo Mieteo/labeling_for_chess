@@ -8,12 +8,23 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from PySide6.QtCore import QRectF, Qt
+from PySide6.QtCore import QEvent, QRectF, Qt
+from PySide6.QtGui import QKeyEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from chess_labeler import yolo_io
 from chess_labeler.main_window import MainWindow
+
+
+def _press_letter(widget, key, text):
+    """Simulate a bare letter keypress with a specific case, e.g. `text="C"`
+    for a Caps-Lock/Shift-typed 'C'. QTest.keyClick's Qt.Key overload doesn't
+    populate event.text() (case doesn't matter for its own Ctrl-based
+    shortcuts), so the letter shortcuts -- which read event.text() to tell
+    red from black -- need a manually-built QKeyEvent instead."""
+    event = QKeyEvent(QEvent.Type.KeyPress, key, Qt.KeyboardModifier.NoModifier, text)
+    QApplication.sendEvent(widget, event)
 
 
 @pytest.fixture(scope="session")
@@ -59,22 +70,31 @@ def test_loaded_boxes_match_labelimg_txt_exactly(main_window, labelimg_dataset):
     assert all(b.confirmed for b in boxes)
 
 
-def test_chord_shortcut_assigns_class_end_to_end(main_window, labelimg_dataset):
+def test_letter_shortcut_assigns_black_class_end_to_end(main_window, labelimg_dataset):
     main_window._open_directory(labelimg_dataset)
     main_window._go_to_index(_index_of(main_window, "0001.jpg"))
 
     box = main_window._canvas.add_box_item(QRectF(400, 300, 30, 30), class_name=None, confirmed=True, select=True)
 
-    QTest.keyClick(main_window._canvas, Qt.Key.Key_R, Qt.KeyboardModifier.ControlModifier)
-    assert main_window._chord.is_pending
-    QTest.keyClick(main_window._canvas, Qt.Key.Key_C, Qt.KeyboardModifier.ControlModifier)
+    _press_letter(main_window._canvas, Qt.Key.Key_C, "c")
+
+    assert box.class_name == "black_cannon"
+    assert box.confirmed is True
+
+
+def test_letter_shortcut_uppercase_assigns_red_class_end_to_end(main_window, labelimg_dataset):
+    main_window._open_directory(labelimg_dataset)
+    main_window._go_to_index(_index_of(main_window, "0001.jpg"))
+
+    box = main_window._canvas.add_box_item(QRectF(400, 300, 30, 30), class_name=None, confirmed=True, select=True)
+
+    _press_letter(main_window._canvas, Qt.Key.Key_C, "C")
 
     assert box.class_name == "red_cannon"
     assert box.confirmed is True
-    assert not main_window._chord.is_pending
 
 
-def test_ctrl_h_alone_assigns_hand_not_pending(main_window, labelimg_dataset):
+def test_ctrl_h_assigns_hand(main_window, labelimg_dataset):
     main_window._open_directory(labelimg_dataset)
     main_window._go_to_index(_index_of(main_window, "0001.jpg"))
     box = main_window._canvas.add_box_item(QRectF(10, 10, 20, 20), class_name=None, confirmed=True, select=True)
@@ -82,7 +102,6 @@ def test_ctrl_h_alone_assigns_hand_not_pending(main_window, labelimg_dataset):
     QTest.keyClick(main_window._canvas, Qt.Key.Key_H, Qt.KeyboardModifier.ControlModifier)
 
     assert box.class_name == "hand"
-    assert not main_window._chord.is_pending
 
 
 def test_save_round_trip_and_suggestions_excluded(main_window, labelimg_dataset):
@@ -90,8 +109,7 @@ def test_save_round_trip_and_suggestions_excluded(main_window, labelimg_dataset)
     assert main_window._current_image_path.name == "0005.jpg"
 
     box = main_window._canvas.add_box_item(QRectF(50, 50, 40, 40), class_name=None, confirmed=True, select=True)
-    QTest.keyClick(main_window._canvas, Qt.Key.Key_R, Qt.KeyboardModifier.ControlModifier)
-    QTest.keyClick(main_window._canvas, Qt.Key.Key_C, Qt.KeyboardModifier.ControlModifier)
+    _press_letter(main_window._canvas, Qt.Key.Key_C, "C")
     assert box.class_name == "red_cannon"
 
     assert main_window._save_current_image() is True
@@ -110,8 +128,7 @@ def test_resume_advances_after_labeling_a_fresh_window(qapp, labelimg_dataset):
     win1 = MainWindow()
     win1._open_directory(labelimg_dataset)
     box = win1._canvas.add_box_item(QRectF(10, 10, 20, 20), class_name=None, confirmed=True, select=True)
-    QTest.keyClick(win1._canvas, Qt.Key.Key_B, Qt.KeyboardModifier.ControlModifier)
-    QTest.keyClick(win1._canvas, Qt.Key.Key_P, Qt.KeyboardModifier.ControlModifier)
+    _press_letter(win1._canvas, Qt.Key.Key_P, "p")
     assert box.class_name == "black_pawn"
     win1._save_current_image()
     win1.close()

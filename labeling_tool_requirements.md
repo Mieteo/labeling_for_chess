@@ -154,61 +154,68 @@ buộc của tool mới.
   mục ảnh; tool mới **không cần** tính năng đó, luôn lưu `.txt` cạnh ảnh
   gốc, đúng với ràng buộc mục 1).
 
-## 3. Tính năng mới #1 — Gán nhãn nhanh bằng tổ hợp phím
+## 3. Tính năng mới #1 — Gán nhãn nhanh bằng phím tắt 1 phím
+
+> Cập nhật 28/07/2026 (xem mục 9): thiết kế "chord 2 bước tuần tự" mô tả ở
+> phiên bản đầu của mục này đã bị **thay thế** bởi thiết kế 1-phím dưới đây
+> sau khi dùng thử thực tế cho thấy 2 bước vẫn chậm hơn cần thiết. Bảng
+> `Ctrl,<màu>,<vai trò>` cũ không còn hiệu lực.
 
 **Mục tiêu**: gán lớp cho box đang chọn (hoặc box vừa vẽ xong, tự động được
-chọn) mà không cần rời tay khỏi bàn phím để mở dropdown/click danh sách lớp.
+chọn) mà không cần rời tay khỏi bàn phím để mở dropdown/click danh sách lớp,
+và nhanh hơn nữa so với chord 2 bước: **chỉ 1 phím** cho mỗi lớp quân cờ.
 
-**Cơ chế đề xuất** (theo đúng ví dụ người dùng đưa ra: `Ctrl+R+C` =
-`red_cannon`) — một **chord 2 bước tuần tự**, giữ Ctrl xuyên suốt, gõ lần
-lượt 2 phím chữ cái, kiểu chord của VSCode (`Ctrl+K` rồi `S`), không phải
-bấm đồng thời 3 phím cùng lúc:
+**Cơ chế**: mỗi vai trò quân là **1 chữ cái**, gõ trực tiếp, không cần giữ
+Ctrl:
 
-- **Bước 1 — màu**: `R` = red, `B` = black.
-- **Bước 2 — vai trò quân** (dùng chữ cái đầu tên tiếng Anh, không trùng
-  bước 1 vì là bước độc lập theo sau):
-  `K`=king, `A`=advisor, `E`=elephant, `H`=horse, `C`=cannon, `R`=rook,
-  `P`=pawn.
-- Sau khi hoàn tất 2 bước, gán lớp `<màu>_<vai trò>` tương ứng cho box đang
-  chọn, tự động lưu thay đổi vào state của ảnh (chưa cần ghi file ngay, theo
-  cơ chế save/auto-save chung).
-- Lớp `hand` không có màu — dùng phím tắt riêng, không qua chord 2 bước, ví
-  dụ `Ctrl+H` bấm ngay lập tức (không có bước chờ sau đó). Cần đảm bảo state
-  machine phân biệt được `Ctrl+H` đứng một mình (= hand) với `Ctrl+H` là
-  bước 2 sau khi đã bấm `Ctrl+R`/`Ctrl+B` trước đó (= red_horse/black_horse)
-  — dựa vào có đang ở trạng thái "chờ bước 2" hay không.
-
-Bảng đầy đủ suy ra từ quy tắc trên (khớp đúng ví dụ gốc `Ctrl+R+C`):
-
-| Chord | Lớp |
+| Phím | Vai trò |
 |---|---|
-| Ctrl,R,K | red_king |
-| Ctrl,R,A | red_advisor |
-| Ctrl,R,E | red_elephant |
-| Ctrl,R,H | red_horse |
-| Ctrl,R,C | red_cannon |
-| Ctrl,R,R | red_rook |
-| Ctrl,R,P | red_pawn |
-| Ctrl,B,K | black_king |
-| Ctrl,B,A | black_advisor |
-| Ctrl,B,E | black_elephant |
-| Ctrl,B,H | black_horse |
-| Ctrl,B,C | black_cannon |
-| Ctrl,B,R | black_rook |
-| Ctrl,B,P | black_pawn |
-| Ctrl,H | hand (bấm ngay, không chờ bước 2) |
+| `p` | pawn (tốt) |
+| `c` | cannon (pháo) |
+| `r` | rook (xe) |
+| `h` | horse (mã) |
+| `e` | elephant (tượng) |
+| `a` | advisor (sĩ) |
+| `k` | king (tướng) |
+
+**Màu quân do hoa/thường của chữ cái quyết định**:
+
+- Gõ **chữ thường** (không bật Caps Lock) → quân **đen** (`black_<vai trò>`).
+- Gõ **chữ HOA** (bật Caps Lock trước, hoặc giữ Shift) → quân **đỏ**
+  (`red_<vai trò>`).
+- Cơ chế đọc `event.text()` của phím vừa gõ (giá trị đã được hệ điều hành
+  dịch theo trạng thái Caps Lock/Shift thực tế), không dùng modifier
+  Ctrl/Shift để suy màu — vì Caps Lock không phải là một Qt keyboard
+  modifier, chỉ ảnh hưởng tới ký tự sinh ra.
+- Sau khi gõ, gán lớp `<màu>_<vai trò>` tương ứng cho box đang chọn, tự động
+  lưu thay đổi vào state của ảnh (chưa cần ghi file ngay, theo cơ chế
+  save/auto-save chung).
+- Lớp `hand` không có màu và không nằm trong 7 chữ cái vai trò ở trên (chữ
+  `h` đã dùng cho horse) — giữ nguyên phím tắt riêng **`Ctrl+H`**, bấm ngay
+  lập tức, không phân biệt hoa/thường.
+
+**Xung đột phím tắt cần tránh** (đã rà soát khi đổi từ chord sang 1-phím):
+
+- Trước đây `A` = "ảnh trước", `D` = "ảnh sau" (phím tắt điều hướng, không
+  giữ modifier). Chữ `a` nay dùng cho advisor (sĩ) nên xung đột trực tiếp
+  với phím `A` cũ (Qt/OS không phân biệt được "A do gõ thường" khác "A do
+  gõ hoa" ở tầng shortcut nếu vẫn dùng QAction shortcut đơn giản). Do đó
+  **điều hướng ảnh trước/sau đã đổi sang phím mũi tên `←`/`→`**, không dùng
+  chữ cái nữa, để giải phóng toàn bộ 26 chữ cái cho việc gán lớp và tránh
+  mọi xung đột tương lai.
+- `W` (bật chế độ vẽ box), `Ctrl+D` (nhân bản), `Ctrl+S/O/Z/Shift+Z/+/-/=/0/9`
+  (lưu, mở, undo/redo, zoom...) đều không trùng với 7 chữ cái vai trò hay
+  `Ctrl+H`, giữ nguyên không đổi.
 
 **Yêu cầu UX đi kèm**:
 
-- Hiện chỉ báo nhỏ trên UI khi đang ở "chờ bước 2" (ví dụ hiện chữ "R…" ở
-  góc màn hình sau khi bấm `Ctrl+R`), để người dùng biết chord đang treo.
-- `Esc` huỷ chord đang chờ giữa chừng.
-- Nếu không có box nào đang chọn khi bấm chord xong, không làm gì (hoặc báo
-  nhẹ), không được tạo box mới từ hư không.
-- Bảng phím tắt nên cấu hình được (nice-to-have, không bắt buộc) — vì đây
-  là lựa chọn mnemonic chủ quan, người dùng có thể muốn đổi.
+- Sau mỗi lần gán lớp thành công, hiện thông báo ngắn ở status bar (ví dụ
+  "Đã gán lớp: red_cannon") để người dùng xác nhận ngay đã gõ đúng màu/vai
+  trò mong muốn — quan trọng vì lỗi hay gặp nhất là quên bật/tắt Caps Lock.
+- Nếu không có box nào đang chọn khi gõ phím, không làm gì (báo nhẹ ở status
+  bar), không được tạo box mới từ hư không.
 - Sau khi vẽ xong 1 box mới (thả chuột), box đó nên **tự động ở trạng thái
-  đang chọn**, để luồng thao tác là: vẽ box → bấm chord gán lớp → vẽ box
+  đang chọn**, để luồng thao tác là: vẽ box → gõ 1 phím gán lớp → vẽ box
   tiếp theo, hoàn toàn không cần chạm chuột vào danh sách lớp.
 
 ## 4. Tính năng mới #2 — Tự động khoanh box bằng phát hiện hình tròn (circle detection)
@@ -349,9 +356,9 @@ dừng ở ảnh nào):
 3. **Test resume**: gán nhãn dở một thư mục (dừng ở ảnh thứ N theo alphabet),
    đóng tool, mở lại đúng thư mục đó → tool phải tự nhảy tới ảnh N+1 (ảnh
    đầu tiên chưa có `.txt`), không yêu cầu người dùng tự kéo tìm.
-4. **Test chord phím tắt**: vẽ 1 box, bấm `Ctrl` rồi `R` rồi `C` → box phải
-   được gán đúng lớp `red_cannon`; test tương tự cho `Ctrl+H` (hand) không
-   bị treo chờ bước 2.
+4. **Test phím tắt gán lớp**: vẽ 1 box, gõ `c` (chữ thường) → box phải được
+   gán đúng lớp `black_cannon`; bật Caps Lock rồi gõ `C` (chữ hoa) → phải
+   đổi thành `red_cannon`; bấm `Ctrl+H` → phải gán `hand`.
 5. **Test circle-assist**: trên 1 ảnh có quân cờ tròn rõ nét, chạy chế độ
    radius-guided sau khi đo 1 quân mẫu → phải sinh ra ít nhất một vài gợi ý
    box trùng vị trí quân thật (không cần chính xác 100%, đây là công cụ hỗ
@@ -371,8 +378,13 @@ tiếp, agent xây dựng có thể triển khai thẳng theo tài liệu này:
 - **Stack xây dựng**: Python 3.12 + PySide6 + OpenCV-Python (xem mục 6) —
   chủ dự án giao toàn quyền chọn giữa Python hoặc C++/Qt, đã chọn Python vì
   môi trường pip đã sẵn sàng trên máy dev từ các bước Phase 5 khác.
-- **Bảng chord phím tắt ở mục 3**: xác nhận đúng như đề xuất, giữ nguyên,
-  không đổi mnemonic.
+- **Phím tắt gán lớp ở mục 3**: ban đầu chốt chord 2 bước `Ctrl+<màu>+<vai
+  trò>`; **trong cùng ngày, sau khi dùng thử**, chủ dự án yêu cầu đổi sang
+  1 phím duy nhất mỗi vai trò (`p/c/r/h/e/a/k`), màu suy ra từ hoa/thường
+  (Caps Lock/Shift) thay vì bước riêng — xem bản mới nhất của mục 3. Đây là
+  quyết định **thay thế**, không phải bổ sung; bảng chord cũ không còn áp
+  dụng. Kèm theo đó, phím điều hướng ảnh trước/sau đổi từ chữ `A`/`D` sang
+  mũi tên `←`/`→` để tránh xung đột với chữ `a` (advisor).
 - **Dung sai bán kính** ở chế độ radius-guided (mục 4): mặc định **±15%**,
   bắt buộc có control trên UI để người dùng tự tinh chỉnh theo từng
   ảnh/lô ảnh.
