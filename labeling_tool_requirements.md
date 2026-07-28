@@ -138,18 +138,23 @@ buộc của tool mới.
   định sẵn, không gõ tay tên lớp để tránh lỗi chính tả sinh lớp lạ).
 - **Danh sách box của ảnh hiện tại**: panel liệt kê toàn bộ box đã vẽ trên
   ảnh đang mở kèm tên lớp, click một dòng để highlight box tương ứng trên
-  ảnh. (Cập nhật 29/07/2026: danh sách được **nhóm theo lớp** theo thứ tự cố
-  định `p, r, c, h, e, a, k` (đen) rồi `P, R, C, H, E, A, K` (đỏ) rồi `hand`
-  — xem `key_shortcuts.CLASS_DISPLAY_ORDER`; box **chưa gán lớp** luôn nằm
-  **dưới cùng**. Trên ảnh, mỗi box cũng có một nhãn chữ nhỏ in đậm — nền
-  trắng, 1 chữ cái vai trò viết thường (hoặc chữ "hand"), màu chữ đen hoặc đỏ
-  theo màu quân — box chưa gán lớp chỉ có ô nền trắng trống, không chữ. Nhãn
-  ghim ở **góc trên-trái, nằm ngoài box** (chạm đúng góc, không đè lên quân
-  cờ bên trong) — xem lại 29/07/2026: bản đầu đặt nhãn ở tâm box, che mất
-  quân cờ, đã sửa. Vị trí này được neo theo góc box chứ không kẹp trong biên
-  ảnh, nên với quân sát mép bàn/mép ảnh, nhãn có thể vẽ ra ngoài vùng ảnh —
-  chấp nhận được, chỉ cần không bao giờ làm crash chương trình (đã có test
-  phủ trường hợp box dán sát góc (0,0) và box 1x1 pixel).
+  ảnh. (Cập nhật 29/07/2026: panel tách thành **2 cột cạnh nhau** — cột trái
+  "Đen / chưa gán" (quân đen + box chưa gán lớp), cột phải "Đỏ / hand" (quân
+  đỏ + nhãn `hand`); mỗi cột tự sắp theo thứ tự cố định `p, r, c, h, e, a, k`
+  (trái) / `P, R, C, H, E, A, K` (phải), phần "leftover" của mỗi cột
+  (chưa-gán-lớp / hand) luôn ở dưới cùng cột đó — xem
+  `panels._BLACK_COLUMN_ORDER` / `_RED_COLUMN_ORDER`. Chỉ 1 trong 2 cột được
+  highlight tại một thời điểm, khớp với box đang chọn trên canvas.
+
+  Trên ảnh, mỗi box cũng có một nhãn chữ nhỏ in đậm vẽ **bên trong box, góc
+  trên-trái** — không có nền, 1 chữ cái vai trò viết thường (hoặc chữ
+  "hand"), màu chữ đen hoặc đỏ theo màu quân; box chưa gán lớp không vẽ gì cả
+  (xem lại 29/07/2026, 2 lần: bản đầu đặt nhãn ở tâm box kèm nền trắng, che
+  mất quân cờ; bản 2 chuyển ra ngoài góc box nhưng vẫn còn nền trắng và to;
+  bản hiện tại bỏ hẳn nền, thu nhỏ, đưa vào trong góc box). Vị trí luôn tính
+  theo góc box (không kẹp theo biên ảnh), nên quân sát mép bàn/mép ảnh vẫn an
+  toàn — không bao giờ crash (có test phủ trường hợp box dán sát góc (0,0)
+  và box 1x1 pixel).
 - **Điều hướng ảnh**: phím tắt ảnh kế tiếp / ảnh trước, giữ nguyên toàn bộ
   box đang vẽ dở khi chuyển ảnh (hoặc cảnh báo nếu có thay đổi chưa lưu).
 - **Lưu**: phím tắt lưu ảnh hiện tại (ghi `<tên>.txt`); nên có tuỳ chọn

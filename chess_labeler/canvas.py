@@ -153,7 +153,7 @@ class BoxItem(QGraphicsRectItem):
 
     def boundingRect(self) -> QRectF:  # noqa: N802 (Qt override)
         s = self.handle_scene_size()
-        return self.rect().adjusted(-s, -s, s, s).united(self._label_patch_rect())
+        return self.rect().adjusted(-s, -s, s, s).united(self._label_text_rect())
 
     def _label_font(self) -> QFont:
         inv_scale = self.handle_scene_size() / HANDLE_SCREEN_SIZE
@@ -162,25 +162,20 @@ class BoxItem(QGraphicsRectItem):
         font.setBold(True)
         return font
 
-    def _label_patch_rect(self) -> QRectF:
-        """Small white patch showing the class glyph, pinned just outside
-        the box's top-left corner (touching it, not overlapping the piece
-        underneath) -- always present, even with no text yet, so an
-        unlabeled box still has a visible, blank "label slot".
-
-        Anchored to the corner rather than clamped to stay on-image: a
-        piece drawn flush against the board edge is expected and must
-        never crash the paint/bounding-rect code, even though the patch
-        then sits partly outside the image (Qt renders that fine; see
-        boundingRect, which unions this in so nothing gets clipped/ghosted)."""
+    def _label_text_rect(self) -> QRectF:
+        """Where the class glyph is drawn: just inside the box's top-left
+        corner, no background -- an unlabeled box (empty glyph) draws
+        nothing, so this degenerates to a zero-size rect at that corner
+        (harmless: united()/drawText() both no-op on an empty rect)."""
+        text = display_label_for_class(self.class_name)
+        top_left = self.rect().topLeft()
+        if not text:
+            return QRectF(top_left, top_left)
         metrics = QFontMetricsF(self._label_font())
         pad = LABEL_PADDING_SCREEN_PX * (self.handle_scene_size() / HANDLE_SCREEN_SIZE)
-        text = display_label_for_class(self.class_name)
         text_height = max(metrics.height(), 1.0)
-        text_width = max(metrics.horizontalAdvance(text) if text else text_height, 1.0)
-        patch = QRectF(0, 0, text_width + 2 * pad, text_height + 2 * pad)
-        patch.moveBottomRight(self.rect().topLeft())
-        return patch
+        text_width = max(metrics.horizontalAdvance(text), 1.0)
+        return QRectF(top_left.x() + pad, top_left.y() + pad, text_width, text_height)
 
     def paint(self, painter: QPainter, option: QStyleOptionGraphicsItem, widget: QWidget | None = None) -> None:  # noqa: N802
         color = class_color(self.class_name)
@@ -200,16 +195,12 @@ class BoxItem(QGraphicsRectItem):
         self._paint_class_label(painter)
 
     def _paint_class_label(self, painter: QPainter) -> None:
-        patch = self._label_patch_rect()
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QBrush(QColor(255, 255, 255)))
-        painter.drawRect(patch)
-
         text = display_label_for_class(self.class_name)
-        if text:
-            painter.setFont(self._label_font())
-            painter.setPen(_label_text_color(self.class_name))
-            painter.drawText(patch, Qt.AlignmentFlag.AlignCenter, text)
+        if not text:
+            return
+        painter.setFont(self._label_font())
+        painter.setPen(_label_text_color(self.class_name))
+        painter.drawText(self._label_text_rect(), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, text)
 
     def hoverMoveEvent(self, event) -> None:  # noqa: N802
         if self.isSelected():
