@@ -93,9 +93,9 @@ class BoxListPanel(QWidget):
         self._items = list(boxes)
         self._list.clear()
         for box in self._items:
-            label = box.class_name or "(chua gan lop)"
+            label = box.class_name or "(chưa gán lớp)"
             if not box.confirmed:
-                label = f"[goi y] {label}"
+                label = f"[gợi ý] {label}"
             item = QListWidgetItem(label)
             item.setForeground(class_color(box.class_name))
             self._list.addItem(item)

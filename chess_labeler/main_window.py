@@ -107,13 +107,13 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     def _build_dock_panels(self) -> None:
         self._file_list_panel = FileListPanel(self)
-        file_dock = QDockWidget("Danh sach anh", self)
+        file_dock = QDockWidget("Danh sách ảnh", self)
         file_dock.setWidget(self._file_list_panel)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, file_dock)
         self._file_list_panel.imageActivated.connect(self._go_to_index)
 
         self._box_list_panel = BoxListPanel(self)
-        box_dock = QDockWidget("Box trong anh nay", self)
+        box_dock = QDockWidget("Box trong ảnh này", self)
         box_dock.setWidget(self._box_list_panel)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, box_dock)
         self._box_list_panel.boxActivated.connect(self._canvas.select_box)
@@ -123,9 +123,9 @@ class MainWindow(QMainWindow):
 
         self._class_combo = QComboBox(assist)
         self._class_combo.activated.connect(self._on_class_combo_activated)
-        form.addRow("Lop:", self._class_combo)
+        form.addRow("Lớp:", self._class_combo)
 
-        measure_btn = QPushButton("Do ban kinh tham chieu (keo chuot)", assist)
+        measure_btn = QPushButton("Đo bán kính tham chiếu (kéo chuột)", assist)
         measure_btn.clicked.connect(self._start_measure_radius)
         form.addRow(measure_btn)
 
@@ -133,28 +133,28 @@ class MainWindow(QMainWindow):
         self._radius_spin.setRange(1.0, 5000.0)
         self._radius_spin.setDecimals(1)
         self._radius_spin.valueChanged.connect(self._on_radius_spin_changed)
-        form.addRow("Ban kinh (px):", self._radius_spin)
+        form.addRow("Bán kính (px):", self._radius_spin)
 
         self._tolerance_spin = QDoubleSpinBox(assist)
         self._tolerance_spin.setRange(1.0, 100.0)
         self._tolerance_spin.setDecimals(1)
         self._tolerance_spin.setSuffix(" %")
         self._tolerance_spin.setValue(DEFAULT_RADIUS_TOLERANCE_PCT)
-        form.addRow("Dung sai ban kinh:", self._tolerance_spin)
+        form.addRow("Dung sai bán kính:", self._tolerance_spin)
 
-        rerun_btn = QPushButton("Chay lai phat hien (radius-guided)", assist)
+        rerun_btn = QPushButton("Chạy lại phát hiện (radius-guided)", assist)
         rerun_btn.clicked.connect(lambda: self._run_detection("radius_guided"))
         form.addRow(rerun_btn)
 
-        autoscan_btn = QPushButton("Auto-scan toan anh", assist)
+        autoscan_btn = QPushButton("Auto-scan toàn ảnh", assist)
         autoscan_btn.clicked.connect(lambda: self._run_detection("auto_scan"))
         form.addRow(autoscan_btn)
 
-        clear_btn = QPushButton("Xoa goi y chua xac nhan", assist)
+        clear_btn = QPushButton("Xoá gợi ý chưa xác nhận", assist)
         clear_btn.clicked.connect(self._clear_unconfirmed_suggestions)
         form.addRow(clear_btn)
 
-        assist_dock = QDockWidget("Gan lop / Circle-assist", self)
+        assist_dock = QDockWidget("Gán lớp / Circle-assist", self)
         assist_dock.setWidget(assist)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, assist_dock)
 
@@ -162,45 +162,45 @@ class MainWindow(QMainWindow):
         toolbar = QToolBar("Main", self)
         self.addToolBar(toolbar)
 
-        open_action = QAction("Mo thu muc...", self)
+        open_action = QAction("Mở thư mục...", self)
         open_action.setShortcut(QKeySequence("Ctrl+O"))
         open_action.triggered.connect(self.open_directory)
         toolbar.addAction(open_action)
 
-        save_action = QAction("Luu", self)
+        save_action = QAction("Lưu", self)
         save_action.setShortcut(QKeySequence("Ctrl+S"))
         save_action.triggered.connect(self._save_current_image)
         toolbar.addAction(save_action)
 
-        save_empty_action = QAction("Luu: khong co doi tuong nao", self)
+        save_empty_action = QAction("Lưu: không có đối tượng nào", self)
         save_empty_action.triggered.connect(self._save_current_image_as_empty)
         toolbar.addAction(save_empty_action)
 
-        self._autosave_action = QAction("Auto-save khi chuyen anh", self)
+        self._autosave_action = QAction("Auto-save khi chuyển ảnh", self)
         self._autosave_action.setCheckable(True)
         self._autosave_action.setChecked(True)
         toolbar.addAction(self._autosave_action)
 
         toolbar.addSeparator()
 
-        prev_action = QAction("Anh truoc (A)", self)
+        prev_action = QAction("Ảnh trước (A)", self)
         prev_action.setShortcut(QKeySequence("A"))
         prev_action.triggered.connect(self.prev_image)
         toolbar.addAction(prev_action)
 
-        next_action = QAction("Anh sau (D)", self)
+        next_action = QAction("Ảnh sau (D)", self)
         next_action.setShortcut(QKeySequence("D"))
         next_action.triggered.connect(self.next_image)
         toolbar.addAction(next_action)
 
         toolbar.addSeparator()
 
-        draw_action = QAction("Ve box (W)", self)
+        draw_action = QAction("Vẽ box (W)", self)
         draw_action.setShortcut(QKeySequence("W"))
         draw_action.triggered.connect(self._enter_draw_mode)
         toolbar.addAction(draw_action)
 
-        self._duplicate_action = QAction("Nhan doi box (Ctrl+D)", self)
+        self._duplicate_action = QAction("Nhân bản box (Ctrl+D)", self)
         self._duplicate_action.setShortcut(QKeySequence("Ctrl+D"))
         self._duplicate_action.setEnabled(False)
         self._duplicate_action.triggered.connect(self._duplicate_selected_box)
@@ -246,7 +246,7 @@ class MainWindow(QMainWindow):
     def open_directory(self) -> None:
         if not self._confirm_leave_current_image():
             return
-        directory = QFileDialog.getExistingDirectory(self, "Chon thu muc anh")
+        directory = QFileDialog.getExistingDirectory(self, "Chọn thư mục ảnh")
         if not directory:
             return
         self._open_directory(Path(directory))
@@ -275,7 +275,7 @@ class MainWindow(QMainWindow):
 
         if not self._images:
             QMessageBox.information(
-                self, "Thu muc trong", "Khong tim thay anh .jpg/.jpeg/.png nao trong thu muc nay."
+                self, "Thư mục trống", "Không tìm thấy ảnh .jpg/.jpeg/.png nào trong thư mục này."
             )
             self._current_index = -1
             self._current_image_path = None
@@ -291,7 +291,7 @@ class MainWindow(QMainWindow):
         path = self._images[index]
         pixmap = QPixmap(str(path))
         if pixmap.isNull():
-            QMessageBox.warning(self, "Loi", f"Khong the mo anh: {path}")
+            QMessageBox.warning(self, "Lỗi", f"Không thể mở ảnh: {path}")
             return
 
         self._current_index = index
@@ -333,8 +333,8 @@ class MainWindow(QMainWindow):
             return True
         resp = QMessageBox.question(
             self,
-            "Thay doi chua luu",
-            "Anh hien tai co thay doi chua luu. Luu truoc khi chuyen anh?",
+            "Thay đổi chưa lưu",
+            "Ảnh hiện tại có thay đổi chưa lưu. Lưu trước khi chuyển ảnh?",
             QMessageBox.StandardButton.Save
             | QMessageBox.StandardButton.Discard
             | QMessageBox.StandardButton.Cancel,
@@ -369,9 +369,9 @@ class MainWindow(QMainWindow):
         if unclassified:
             resp = QMessageBox.warning(
                 self,
-                "Con box chua gan lop",
-                f"{len(unclassified)} box da xac nhan nhung CHUA gan lop -- cac box nay se "
-                "KHONG duoc ghi vao file .txt. Van luu?",
+                "Còn box chưa gán lớp",
+                f"{len(unclassified)} box đã xác nhận nhưng CHƯA gán lớp -- các box này sẽ "
+                "KHÔNG được ghi vào file .txt. Vẫn lưu?",
                 QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Cancel,
             )
             if resp != QMessageBox.StandardButton.Save:
@@ -391,7 +391,7 @@ class MainWindow(QMainWindow):
         self._update_window_title()
         self._file_list_panel.refresh_label_at(self._current_index)
         self._save_session_state()
-        self.statusBar().showMessage(f"Da luu {self._current_image_path.name} ({len(boxes_to_save)} box).", 2500)
+        self.statusBar().showMessage(f"Đã lưu {self._current_image_path.name} ({len(boxes_to_save)} box).", 2500)
         return True
 
     def _save_current_image_as_empty(self) -> None:
@@ -401,9 +401,9 @@ class MainWindow(QMainWindow):
         if boxes:
             resp = QMessageBox.question(
                 self,
-                "Xac nhan",
-                f"Anh nay dang co {len(boxes)} box tren canvas. Luu nhu KHONG co doi tuong nao se "
-                "bo qua toan bo box hien tai khi ghi file (khong xoa tren canvas). Tiep tuc?",
+                "Xác nhận",
+                f"Ảnh này đang có {len(boxes)} box trên canvas. Lưu như KHÔNG có đối tượng nào sẽ "
+                "bỏ qua toàn bộ box hiện tại khi ghi file (không xoá trên canvas). Tiếp tục?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
             if resp != QMessageBox.StandardButton.Yes:
@@ -413,7 +413,7 @@ class MainWindow(QMainWindow):
         self._update_window_title()
         self._file_list_panel.refresh_label_at(self._current_index)
         self._save_session_state()
-        self.statusBar().showMessage("Da luu: khong co doi tuong nao.", 2500)
+        self.statusBar().showMessage("Đã lưu: không có đối tượng nào.", 2500)
 
     def _save_session_state(self) -> None:
         if self._image_dir is None:
@@ -433,7 +433,7 @@ class MainWindow(QMainWindow):
         self._update_window_title()
 
     def _update_window_title(self) -> None:
-        name = self._current_image_path.name if self._current_image_path else "(chua mo thu muc)"
+        name = self._current_image_path.name if self._current_image_path else "(chưa mở thư mục)"
         star = "*" if self._dirty else ""
         self.setWindowTitle(f"Xiangqi Labeler - {name}{star}")
 
@@ -566,18 +566,18 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     def _enter_draw_mode(self) -> None:
         self._canvas.set_mode(CanvasMode.DRAW_BOX)
-        self.statusBar().showMessage("Che do ve box: keo chuot de ve 1 box moi.", 3000)
+        self.statusBar().showMessage("Chế độ vẽ box: kéo chuột để vẽ 1 box mới.", 3000)
 
     def _start_measure_radius(self) -> None:
         self._canvas.set_mode(CanvasMode.MEASURE_RADIUS)
-        self.statusBar().showMessage("Keo chuot quanh 1 quan co mau ro net de do ban kinh...", 4000)
+        self.statusBar().showMessage("Kéo chuột quanh 1 quân cờ mẫu rõ nét để đo bán kính...", 4000)
 
     def _on_radius_measured(self, r0: float) -> None:
         self._reference_radius_px = r0
         self._radius_spin.blockSignals(True)
         self._radius_spin.setValue(r0)
         self._radius_spin.blockSignals(False)
-        self.statusBar().showMessage(f"Da do ban kinh tham chieu: {r0:.1f}px", 3000)
+        self.statusBar().showMessage(f"Đã đo bán kính tham chiếu: {r0:.1f}px", 3000)
         self._run_detection("radius_guided")
 
     def _on_radius_spin_changed(self, value: float) -> None:
@@ -597,8 +597,8 @@ class MainWindow(QMainWindow):
             if self._reference_radius_px is None:
                 QMessageBox.information(
                     self,
-                    "Can do ban kinh",
-                    "Hay do ban kinh tham chieu truoc (nut 'Do ban kinh tham chieu', keo chuot quanh 1 quan co mau).",
+                    "Cần đo bán kính",
+                    "Hãy đo bán kính tham chiếu trước (nút 'Đo bán kính tham chiếu', kéo chuột quanh 1 quân cờ mẫu).",
                 )
                 return
             circles = circle_detect.radius_guided(image_bgr, self._reference_radius_px, self._tolerance_spin.value())
@@ -627,7 +627,7 @@ class MainWindow(QMainWindow):
         self._mark_dirty()
         self._refresh_box_list()
         self._save_session_state()
-        self.statusBar().showMessage(f"Phat hien {added} goi y hinh tron.", 3000)
+        self.statusBar().showMessage(f"Phát hiện {added} gợi ý hình tròn.", 3000)
 
     def _clear_unconfirmed_suggestions(self) -> None:
         self._push_undo(self._snapshot())
@@ -674,7 +674,7 @@ class MainWindow(QMainWindow):
     def _assign_class_to_selected(self, class_name: str | None) -> None:
         box = self._canvas.selected_box()
         if box is None:
-            self.statusBar().showMessage("Khong co box nao dang chon -- chord bi bo qua.", 2000)
+            self.statusBar().showMessage("Không có box nào đang chọn -- chord bị bỏ qua.", 2000)
             return
         self._push_undo(self._snapshot())
         box.class_name = class_name
