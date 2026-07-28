@@ -26,8 +26,8 @@ from PySide6.QtWidgets import (
 from .key_shortcuts import display_label_for_class
 
 HANDLE_SCREEN_SIZE = 9.0  # px, kept constant on screen regardless of zoom
-LABEL_FONT_SCREEN_PX = 11.0  # class-label glyph size, kept constant on screen
-LABEL_PADDING_SCREEN_PX = 3.0
+LABEL_FONT_SCREEN_PX = 9.0  # class-label glyph size, kept constant on screen
+LABEL_PADDING_SCREEN_PX = 2.0
 MIN_DRAG_PX = 3
 
 _PALETTE_BY_NAME = {
@@ -163,16 +163,23 @@ class BoxItem(QGraphicsRectItem):
         return font
 
     def _label_patch_rect(self) -> QRectF:
-        """Small white patch centered on the box showing its class glyph --
-        always present (even with no text yet) so an unlabeled box still
-        has a visible, blank "label slot" at its center."""
+        """Small white patch showing the class glyph, pinned just outside
+        the box's top-left corner (touching it, not overlapping the piece
+        underneath) -- always present, even with no text yet, so an
+        unlabeled box still has a visible, blank "label slot".
+
+        Anchored to the corner rather than clamped to stay on-image: a
+        piece drawn flush against the board edge is expected and must
+        never crash the paint/bounding-rect code, even though the patch
+        then sits partly outside the image (Qt renders that fine; see
+        boundingRect, which unions this in so nothing gets clipped/ghosted)."""
         metrics = QFontMetricsF(self._label_font())
         pad = LABEL_PADDING_SCREEN_PX * (self.handle_scene_size() / HANDLE_SCREEN_SIZE)
         text = display_label_for_class(self.class_name)
-        text_height = metrics.height()
-        text_width = metrics.horizontalAdvance(text) if text else text_height
+        text_height = max(metrics.height(), 1.0)
+        text_width = max(metrics.horizontalAdvance(text) if text else text_height, 1.0)
         patch = QRectF(0, 0, text_width + 2 * pad, text_height + 2 * pad)
-        patch.moveCenter(self.rect().center())
+        patch.moveBottomRight(self.rect().topLeft())
         return patch
 
     def paint(self, painter: QPainter, option: QStyleOptionGraphicsItem, widget: QWidget | None = None) -> None:  # noqa: N802
