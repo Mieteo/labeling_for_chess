@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import pytest
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QMimeData, QPointF, Qt
+from PySide6.QtGui import QDropEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
@@ -109,6 +110,28 @@ def test_programmatic_fen_load_is_clean_but_click_move_emits_a_live_fen():
         editor.close()
 
 
+def test_dragging_a_board_piece_moves_it_and_captures_the_target_occupant():
+    app = _ensure_qapp()
+    editor = XiangqiBoardEditor()
+    editor.resize(420, 620)
+    editor.show()
+    app.processEvents()
+    try:
+        editor.set_empty_position()
+        editor._place_user((0, 6), "P")
+        editor._place_user((0, 5), "c")
+        view = editor._view
+        QTest.mousePress(view, Qt.MouseButton.LeftButton, pos=view.square_center((0, 6)))
+        QTest.mouseMove(view, view.square_center((0, 5)), delay=10)
+        QTest.mouseRelease(view, Qt.MouseButton.LeftButton, pos=view.square_center((0, 5)))
+        app.processEvents()
+
+        assert editor.board().piece_at((0, 6)) is None
+        assert editor.board().piece_at((0, 5)) == "P"
+    finally:
+        editor.close()
+
+
 def test_selected_piece_can_be_removed_with_delete_from_the_board_surface():
     app = _ensure_qapp()
     editor = XiangqiBoardEditor()
@@ -123,6 +146,51 @@ def test_selected_piece_can_be_removed_with_delete_from_the_board_surface():
         app.processEvents()
 
         assert editor.board().piece_at(source) is None
+        assert editor.can_undo
+    finally:
+        editor.close()
+
+
+def test_piece_trays_are_visual_and_dropping_a_piece_places_or_replaces_it():
+    app = _ensure_qapp()
+    editor = XiangqiBoardEditor()
+    editor.resize(520, 620)
+    editor.show()
+    app.processEvents()
+    try:
+        assert len(editor._palette_buttons) == 14
+        assert set(editor._palette_buttons) == set("KABNRCPkabnrcp")
+        assert editor._palette_buttons["k"].isCheckable()
+        assert editor._palette_buttons["K"].isCheckable()
+
+        editor.set_empty_position()
+        view = editor._view
+        target = (4, 4)
+        mime = QMimeData()
+        mime.setData("application/x-xiangqi-piece", b"C")
+        drop = QDropEvent(
+            QPointF(view.square_center(target)),
+            Qt.DropAction.CopyAction,
+            mime,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        view.dropEvent(drop)
+        app.processEvents()
+        assert drop.isAccepted()
+        assert editor.board().piece_at(target) == "C"
+
+        # A second drop on the same intersection deliberately replaces it.
+        mime.setData("application/x-xiangqi-piece", b"p")
+        replacement = QDropEvent(
+            QPointF(view.square_center(target)),
+            Qt.DropAction.CopyAction,
+            mime,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        view.dropEvent(replacement)
+        assert editor.board().piece_at(target) == "p"
         assert editor.can_undo
     finally:
         editor.close()

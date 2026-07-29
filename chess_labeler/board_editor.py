@@ -12,11 +12,22 @@ from __future__ import annotations
 from collections import Counter
 from typing import Final, TypeAlias
 
-from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QKeyEvent, QMouseEvent, QPainter, QPen
+from PySide6.QtCore import QMimeData, QPoint, QPointF, QRectF, Qt, Signal
+from PySide6.QtGui import (
+    QColor,
+    QDrag,
+    QDragEnterEvent,
+    QDragMoveEvent,
+    QDropEvent,
+    QFont,
+    QKeyEvent,
+    QMouseEvent,
+    QPainter,
+    QPen,
+    QPixmap,
+)
 from PySide6.QtWidgets import (
     QApplication,
-    QComboBox,
     QHBoxLayout,
     QLabel,
     QMessageBox,
@@ -111,6 +122,83 @@ _PIECE_GLYPHS: Final = {
     "c": "砲",
     "p": "卒",
 }
+
+_PIECE_MIME_TYPE: Final = "application/x-xiangqi-piece"
+
+
+class PiecePaletteButton(QPushButton):
+    """A visual Xiangqi piece that can be selected or dragged onto the board."""
+
+    def __init__(self, piece: str, parent: QWidget | None = None):
+        super().__init__(_PIECE_GLYPHS[piece], parent)
+        self.piece = piece
+        self._press_position: QPoint | None = None
+        self.setObjectName(f"piecePalette{piece}")
+        self.setToolTip(f"{_PIECE_DISPLAY_NAMES[piece]} — kéo vào bàn cờ")
+        self.setCheckable(True)
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+        self.setMinimumSize(38, 38)
+        self.setStyleSheet(
+            "QPushButton {"
+            " border: 1px solid #4e3923; border-radius: 19px;"
+            " background: #fffdf6; font-weight: bold; font-size: 20px;"
+            f" color: {'#c62828' if piece.isupper() else '#202124'};"
+            "}"
+            "QPushButton:hover { background: #fff1b8; }"
+            "QPushButton:checked { border: 3px solid #e6a500; background: #fff1b8; }"
+        )
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # type: ignore[override]
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._press_position = event.position().toPoint()
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:  # type: ignore[override]
+        if (
+            self._press_position is not None
+            and event.buttons() & Qt.MouseButton.LeftButton
+            and (event.position().toPoint() - self._press_position).manhattanLength()
+            >= QApplication.startDragDistance()
+        ):
+            self._start_drag()
+            self._press_position = None
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # type: ignore[override]
+        self._press_position = None
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+        super().mouseReleaseEvent(event)
+
+    def _start_drag(self) -> None:
+        drag = QDrag(self)
+        mime_data = QMimeData()
+        mime_data.setData(_PIECE_MIME_TYPE, self.piece.encode("ascii"))
+        drag.setMimeData(mime_data)
+        drag.setPixmap(self._drag_pixmap())
+        drag.setHotSpot(QPoint(19, 19))
+        drag.exec(Qt.DropAction.CopyAction)
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+
+    def _drag_pixmap(self) -> QPixmap:
+        pixmap = QPixmap(42, 42)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        try:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            painter.setPen(QPen(QColor("#4e3923"), 2))
+            painter.setBrush(QColor("#fffdf6"))
+            painter.drawEllipse(QPointF(21, 21), 18, 18)
+            font = QFont(self.font())
+            font.setBold(True)
+            font.setPointSizeF(18)
+            painter.setFont(font)
+            painter.setPen(QColor("#c62828") if self.piece.isupper() else QColor("#202124"))
+            painter.drawText(QRectF(3, 3, 36, 36), Qt.AlignmentFlag.AlignCenter, _PIECE_GLYPHS[self.piece])
+        finally:
+            painter.end()
+        return pixmap
 
 
 def describe_validation_issue(issue: str) -> str:
@@ -394,10 +482,12 @@ class XiangqiBoardView(QWidget):
         self._drag_source: Square | None = None
         self._drag_position = QPoint()
         self._drag_started = False
+        self._drop_square: Square | None = None
         self.setMinimumSize(260, 300)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setAcceptDrops(True)
 
     @property
     def selected_square(self) -> Square | None:
@@ -485,9 +575,10 @@ class XiangqiBoardView(QWidget):
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # type: ignore[override]
         if self._drag_source is not None and event.buttons() & Qt.MouseButton.LeftButton:
-            if (event.position().toPoint() - self._drag_position).manhattanLength() >= 4:
+            position = event.position().toPoint()
+            if self._drag_started or (position - self._drag_position).manhattanLength() >= 4:
                 self._drag_started = True
-                self._drag_position = event.position().toPoint()
+                self._drag_position = position
                 self.update()
                 event.accept()
                 return
@@ -519,6 +610,37 @@ class XiangqiBoardView(QWidget):
         self.update()
         event.accept()
 
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # type: ignore[override]
+        if self._piece_from_mime(event.mimeData()) is not None:
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+    def dragMoveEvent(self, event: QDragMoveEvent) -> None:  # type: ignore[override]
+        if self._piece_from_mime(event.mimeData()) is None:
+            event.ignore()
+            return
+        self._drop_square = self._square_at(event.position())
+        self.update()
+        event.acceptProposedAction()
+
+    def dragLeaveEvent(self, event) -> None:  # type: ignore[override]
+        self._drop_square = None
+        self.update()
+        event.accept()
+
+    def dropEvent(self, event: QDropEvent) -> None:  # type: ignore[override]
+        piece = self._piece_from_mime(event.mimeData())
+        square = self._square_at(event.position())
+        self._drop_square = None
+        self.update()
+        if piece is None or square is None:
+            event.ignore()
+            return
+        self.setFocus()
+        self.placeRequested.emit(square, piece)
+        event.acceptProposedAction()
+
     def keyPressEvent(self, event: QKeyEvent) -> None:  # type: ignore[override]
         if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace) and self._selected is not None:
             square = self._selected
@@ -545,6 +667,16 @@ class XiangqiBoardView(QWidget):
         self._press_square = None
         self._drag_source = None
         self._drag_started = False
+
+    @staticmethod
+    def _piece_from_mime(mime_data: QMimeData) -> str | None:
+        if not mime_data.hasFormat(_PIECE_MIME_TYPE):
+            return None
+        try:
+            piece = bytes(mime_data.data(_PIECE_MIME_TYPE)).decode("ascii")
+        except UnicodeDecodeError:
+            return None
+        return piece if piece in VALID_PIECES else None
 
     def _board_rect(self) -> QRectF:
         contents = QRectF(self.contentsRect())
@@ -661,6 +793,12 @@ class XiangqiBoardView(QWidget):
                 _PIECE_GLYPHS[piece],
             )
 
+        if self._drop_square is not None:
+            center = self.square_center(self._drop_square)
+            painter.setPen(QPen(QColor("#e6a500"), max(2.0, radius * 0.14)))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawEllipse(QPointF(center), radius * 1.12, radius * 1.12)
+
         if self._drag_started and self._drag_source is not None:
             piece = self._board.piece_at(self._drag_source)
             if piece is not None:
@@ -697,7 +835,7 @@ class XiangqiBoardEditor(QWidget):
         self._history_index = 0
         self._clean_fen = self._board.to_fen()
         self._view = XiangqiBoardView(self._board, self)
-        self._palette = QComboBox(self)
+        self._palette_buttons: dict[str, PiecePaletteButton] = {}
         self._fen_label = QLabel(self)
         self._issues_label = QLabel(self)
         self._delete_button = QPushButton("Xóa ô chọn", self)
@@ -830,13 +968,13 @@ class XiangqiBoardEditor(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(4, 4, 4, 4)
         root.setSpacing(5)
-        root.addWidget(self._view, 1)
-
-        self._palette.setObjectName("piecePalette")
-        self._palette.addItem("Di chuyển / chọn", None)
-        for piece in "KABNRCPkabnrcp":
-            self._palette.addItem(_PIECE_DISPLAY_NAMES[piece], piece)
-        root.addWidget(self._palette)
+        board_and_palettes = QHBoxLayout()
+        board_and_palettes.setContentsMargins(0, 0, 0, 0)
+        board_and_palettes.setSpacing(4)
+        board_and_palettes.addLayout(self._build_palette("black", "kabnrcp"))
+        board_and_palettes.addWidget(self._view, 1)
+        board_and_palettes.addLayout(self._build_palette("red", "KABNRCP"))
+        root.addLayout(board_and_palettes, 1)
 
         editing_actions = QHBoxLayout()
         editing_actions.setContentsMargins(0, 0, 0, 0)
@@ -868,8 +1006,25 @@ class XiangqiBoardEditor(QWidget):
         self._issues_label.setWordWrap(True)
         root.addWidget(self._issues_label)
 
+    def _build_palette(self, color: str, pieces: str) -> QVBoxLayout:
+        """Build one compact side tray; black stays left and red stays right."""
+
+        palette = QVBoxLayout()
+        palette.setContentsMargins(0, 0, 0, 0)
+        palette.setSpacing(3)
+        title = QLabel("Đen" if color == "black" else "Đỏ", self)
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setStyleSheet(f"font-weight: bold; color: {'#202124' if color == 'black' else '#c62828'};")
+        palette.addWidget(title)
+        for piece in pieces:
+            button = PiecePaletteButton(piece, self)
+            button.clicked.connect(lambda checked, selected=piece: self._select_palette_piece(selected, checked))
+            self._palette_buttons[piece] = button
+            palette.addWidget(button)
+        palette.addStretch(1)
+        return palette
+
     def _connect_signals(self) -> None:
-        self._palette.currentIndexChanged.connect(self._on_palette_changed)
         self._move_button.clicked.connect(self._select_move_mode)
         self._delete_button.clicked.connect(self._delete_selected)
         self._undo_button.clicked.connect(self.undo)
@@ -884,12 +1039,18 @@ class XiangqiBoardEditor(QWidget):
         self._view.undoRequested.connect(self.undo)
         self._view.redoRequested.connect(self.redo)
 
-    def _on_palette_changed(self) -> None:
-        data = self._palette.currentData()
-        self._view.set_placing_piece(data if isinstance(data, str) else None)
+    def _select_palette_piece(self, piece: str, checked: bool) -> None:
+        """Allow click-to-place as a quick alternative to drag-and-drop."""
+
+        for candidate, button in self._palette_buttons.items():
+            if candidate != piece:
+                button.setChecked(False)
+        self._view.set_placing_piece(piece if checked else None)
 
     def _select_move_mode(self) -> None:
-        self._palette.setCurrentIndex(0)
+        for button in self._palette_buttons.values():
+            button.setChecked(False)
+        self._view.set_placing_piece(None)
 
     def _move_user(self, source: Square, target: Square) -> None:
         if self._board.move(source, target):
