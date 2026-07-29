@@ -10,7 +10,7 @@ into the strict five-column YOLO ``.txt`` labels.
 from __future__ import annotations
 
 from collections import Counter
-from typing import Final, TypeAlias
+from typing import Final
 
 from PySide6.QtCore import QMimeData, QPoint, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import (
@@ -38,7 +38,9 @@ from PySide6.QtWidgets import (
 )
 
 
-Square: TypeAlias = tuple[int, int]  # (file 0..8, rank 0..9), black at rank 0
+# ``typing.TypeAlias`` was added in Python 3.10.  A normal assignment is
+# equivalent here and keeps the application compatible with Python 3.9.
+Square = tuple[int, int]  # (file 0..8, rank 0..9), black at rank 0
 
 BOARD_FILES: Final = 9
 BOARD_RANKS: Final = 10
