@@ -19,13 +19,18 @@ from PySide6.QtWidgets import (
     QDockWidget,
     QDoubleSpinBox,
     QFileDialog,
-    QFormLayout,
+    QGridLayout,
+    QGroupBox,
+    QLabel,
     QInputDialog,
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QStatusBar,
+    QTabWidget,
     QToolBar,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -151,72 +156,107 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, file_dock)
         self._file_list_panel.imageActivated.connect(self._go_to_index)
 
-        self._box_list_panel = BoxListPanel(self)
-        box_dock = QDockWidget("Box trong ảnh này", self)
-        box_dock.setWidget(self._box_list_panel)
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, box_dock)
+        self._right_tabs = QTabWidget(self)
+        self._right_tabs.setObjectName("annotationTabs")
+        self._right_tabs.setMinimumWidth(520)
+
+        annotation_tab = QWidget(self._right_tabs)
+        annotation_tab.setObjectName("annotationTab")
+        annotation_layout = QVBoxLayout(annotation_tab)
+        annotation_layout.setContentsMargins(6, 6, 6, 6)
+        annotation_layout.setSpacing(6)
+
+        boxes_group = QGroupBox("Các box", annotation_tab)
+        boxes_group.setObjectName("boxesGroup")
+        boxes_layout = QVBoxLayout(boxes_group)
+        boxes_layout.setContentsMargins(6, 6, 6, 6)
+        self._box_list_panel = BoxListPanel(boxes_group)
+        self._box_list_panel.setMinimumHeight(110)
+        boxes_layout.addWidget(self._box_list_panel)
+        annotation_layout.addWidget(boxes_group)
         self._box_list_panel.boxActivated.connect(self._canvas.select_box)
 
-        assist = QWidget(self)
-        form = QFormLayout(assist)
+        assist_group = QGroupBox("Gán lớp & hỗ trợ phát hiện", annotation_tab)
+        assist_group.setObjectName("classAssistGroup")
+        assist_layout = QGridLayout(assist_group)
+        assist_layout.setContentsMargins(6, 6, 6, 6)
+        assist_layout.setHorizontalSpacing(6)
+        assist_layout.setVerticalSpacing(4)
 
-        self._class_combo = QComboBox(assist)
+        self._class_combo = QComboBox(assist_group)
+        self._class_combo.setMaximumWidth(190)
+        self._class_combo.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         self._class_combo.activated.connect(self._on_class_combo_activated)
-        form.addRow("Lớp:", self._class_combo)
+        assist_layout.addWidget(QLabel("Lớp:", assist_group), 0, 0)
+        assist_layout.addWidget(self._class_combo, 0, 1)
 
-        measure_btn = QPushButton("Đo bán kính tham chiếu (kéo chuột)", assist)
+        measure_btn = QPushButton("Đo bán kính (kéo chuột)", assist_group)
+        measure_btn.setToolTip("Kéo chuột quanh một quân cờ mẫu để đo bán kính tham chiếu")
         measure_btn.clicked.connect(self._start_measure_radius)
-        form.addRow(measure_btn)
+        assist_layout.addWidget(measure_btn, 0, 2, 1, 3)
 
-        self._radius_spin = QDoubleSpinBox(assist)
+        self._radius_spin = QDoubleSpinBox(assist_group)
         self._radius_spin.setRange(1.0, 5000.0)
         self._radius_spin.setDecimals(1)
+        self._radius_spin.setMaximumWidth(105)
         self._radius_spin.valueChanged.connect(self._on_radius_spin_changed)
-        form.addRow("Bán kính (px):", self._radius_spin)
+        assist_layout.addWidget(QLabel("Bán kính:", assist_group), 1, 0)
+        assist_layout.addWidget(self._radius_spin, 1, 1)
 
-        self._tolerance_spin = QDoubleSpinBox(assist)
+        self._tolerance_spin = QDoubleSpinBox(assist_group)
         self._tolerance_spin.setRange(1.0, 100.0)
         self._tolerance_spin.setDecimals(1)
         self._tolerance_spin.setSuffix(" %")
         self._tolerance_spin.setValue(DEFAULT_RADIUS_TOLERANCE_PCT)
-        form.addRow("Dung sai bán kính:", self._tolerance_spin)
+        self._tolerance_spin.setMaximumWidth(105)
+        assist_layout.addWidget(QLabel("Dung sai:", assist_group), 1, 2)
+        assist_layout.addWidget(self._tolerance_spin, 1, 3)
 
-        rerun_btn = QPushButton("Chạy lại phát hiện (radius-guided)", assist)
+        rerun_btn = QPushButton("Chạy lại", assist_group)
+        rerun_btn.setToolTip("Chạy lại phát hiện theo bán kính tham chiếu")
         rerun_btn.clicked.connect(lambda: self._run_detection("radius_guided"))
-        form.addRow(rerun_btn)
+        assist_layout.addWidget(rerun_btn, 2, 0, 1, 2)
 
-        autoscan_btn = QPushButton("Auto-scan toàn ảnh", assist)
+        autoscan_btn = QPushButton("Tự quét", assist_group)
+        autoscan_btn.setToolTip("Tự động quét toàn bộ ảnh")
         autoscan_btn.clicked.connect(lambda: self._run_detection("auto_scan"))
-        form.addRow(autoscan_btn)
+        assist_layout.addWidget(autoscan_btn, 2, 2)
 
-        clear_btn = QPushButton("Xoá gợi ý chưa xác nhận", assist)
+        clear_btn = QPushButton("Xóa gợi ý", assist_group)
+        clear_btn.setToolTip("Xóa các gợi ý chưa xác nhận")
         clear_btn.clicked.connect(self._clear_unconfirmed_suggestions)
-        form.addRow(clear_btn)
-
-        assist_dock = QDockWidget("Gán lớp / Circle-assist", self)
-        assist_dock.setWidget(assist)
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, assist_dock)
+        assist_layout.addWidget(clear_btn, 2, 3)
+        assist_layout.setColumnStretch(4, 1)
+        annotation_layout.addWidget(assist_group)
 
         self._board_editor = XiangqiBoardEditor(self)
         self._board_editor.boardChanged.connect(self._on_board_changed)
-        board_dock = QDockWidget("Bàn cờ số hóa & FEN", self)
-        board_dock.setWidget(self._board_editor)
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, board_dock)
 
         self._metadata_panel = MetadataPanel(self)
         self._metadata_panel.metadataChanged.connect(self._on_metadata_panel_changed)
         self._metadata_panel.applyNextRequested.connect(self._remember_capture_template_for_next)
         self._metadata_panel.applyRangeRequested.connect(self._apply_capture_template_to_range)
-        metadata_dock = QDockWidget("Điều kiện chụp & review", self)
-        metadata_dock.setWidget(self._metadata_panel)
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, metadata_dock)
+        metadata_group = QGroupBox("Điều kiện chụp & review", annotation_tab)
+        metadata_group.setObjectName("captureConditionsGroup")
+        metadata_layout = QVBoxLayout(metadata_group)
+        metadata_layout.setContentsMargins(6, 6, 6, 6)
+        metadata_layout.addWidget(self._metadata_panel)
+        annotation_layout.addWidget(metadata_group, 1)
 
-        # Keep the original class / assist tools immediately available; the
-        # board and long metadata form remain in their own vertically stacked
-        # dock sections instead of covering the source image.
-        self.splitDockWidget(box_dock, assist_dock, Qt.Orientation.Vertical)
-        self.splitDockWidget(assist_dock, board_dock, Qt.Orientation.Vertical)
-        self.splitDockWidget(board_dock, metadata_dock, Qt.Orientation.Vertical)
+        fen_tab = QWidget(self._right_tabs)
+        fen_tab.setObjectName("fenTab")
+        fen_layout = QVBoxLayout(fen_tab)
+        fen_layout.setContentsMargins(0, 0, 0, 0)
+        fen_layout.addWidget(self._board_editor)
+
+        self._right_tabs.addTab(annotation_tab, "Gán nhãn")
+        self._right_tabs.addTab(fen_tab, "FEN")
+        self._annotation_dock = QDockWidget("Thông tin gán nhãn", self)
+        self._annotation_dock.setObjectName("annotationDock")
+        self._annotation_dock.setMinimumWidth(520)
+        self._annotation_dock.setWidget(self._right_tabs)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._annotation_dock)
+        self.resizeDocks([self._annotation_dock], [540], Qt.Orientation.Horizontal)
 
     def _build_toolbar_and_actions(self) -> None:
         toolbar = QToolBar("Main", self)

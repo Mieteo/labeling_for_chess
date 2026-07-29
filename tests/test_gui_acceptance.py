@@ -82,6 +82,23 @@ def test_fresh_app_with_no_saved_folder_opens_nothing(qapp, isolated_settings):
     qapp.removeEventFilter(win)
 
 
+def test_right_sidebar_groups_annotation_tools_and_fen_into_two_tabs(main_window):
+    tabs = main_window._right_tabs
+
+    assert tabs.count() == 2
+    assert [tabs.tabText(index) for index in range(tabs.count())] == ["Gán nhãn", "FEN"]
+    assert main_window._annotation_dock.minimumWidth() >= 520
+    assert main_window._box_list_panel.parentWidget().objectName() == "boxesGroup"
+    assert main_window._metadata_panel.parentWidget().objectName() == "captureConditionsGroup"
+    assert main_window._board_editor.parentWidget().objectName() == "fenTab"
+
+    # Compact class-assist controls keep the frequently used inputs on the
+    # same short rows instead of consuming one full row each.
+    assert main_window._class_combo.maximumWidth() == 190
+    assert main_window._radius_spin.maximumWidth() == 105
+    assert main_window._tolerance_spin.maximumWidth() == 105
+
+
 def test_stale_saved_folder_that_no_longer_exists_is_ignored(qapp, isolated_settings, tmp_path):
     isolated_settings.setValue("last_image_dir", str(tmp_path / "deleted_folder"))
     win = MainWindow(settings=isolated_settings)  # must not crash on a missing directory

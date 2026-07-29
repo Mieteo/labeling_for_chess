@@ -14,12 +14,13 @@ from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
-    QFormLayout,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
     QScrollArea,
+    QTabWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -112,79 +113,135 @@ class MetadataPanel(QWidget):
         self._completeness.setStyleSheet("font-weight: bold; color: #b36b00; padding: 4px;")
         layout.addWidget(self._completeness)
 
-        board_label = QLabel("Board & xác minh", content)
-        board_label.setStyleSheet("font-weight: bold;")
-        layout.addWidget(board_label)
-        board_form = QFormLayout()
-        layout.addLayout(board_form)
-        self._orientation = self._combo(ORIENTATION_OPTIONS, content)
-        board_form.addRow("Hướng ảnh:", self._orientation)
-        self._corner_status = self._combo(CORNER_STATUS_OPTIONS, content)
-        board_form.addRow("Trạng thái góc:", self._corner_status)
-        self._fen_status = self._combo(FEN_STATUS_OPTIONS, content)
-        board_form.addRow("Trạng thái FEN:", self._fen_status)
-        self._position_complete = QCheckBox("Đủ toàn bộ thế cờ", content)
-        board_form.addRow(self._position_complete)
-        self._side_to_move = QComboBox(content)
+        self._workflow_tabs = QTabWidget(content)
+        self._workflow_tabs.setObjectName("metadataWorkflowTabs")
+        layout.addWidget(self._workflow_tabs, 1)
+
+        essential = QWidget(self._workflow_tabs)
+        essential_layout = QVBoxLayout(essential)
+        essential_layout.setContentsMargins(6, 6, 6, 6)
+        essential_layout.setSpacing(6)
+        essential_hint = QLabel(
+            "Các mục cần kiểm tra trước khi đánh dấu ảnh đã hoàn tất.", essential
+        )
+        essential_hint.setWordWrap(True)
+        essential_hint.setStyleSheet("color: #666;")
+        essential_layout.addWidget(essential_hint)
+        board_grid = QGridLayout()
+        board_grid.setHorizontalSpacing(8)
+        board_grid.setVerticalSpacing(4)
+        essential_layout.addLayout(board_grid)
+        self._orientation = self._combo(ORIENTATION_OPTIONS, essential)
+        self._add_compact_field(board_grid, 0, 0, "Hướng ảnh:", self._orientation, essential)
+        self._corner_status = self._combo(CORNER_STATUS_OPTIONS, essential)
+        self._add_compact_field(board_grid, 0, 2, "Trạng thái góc:", self._corner_status, essential)
+        self._fen_status = self._combo(FEN_STATUS_OPTIONS, essential)
+        self._add_compact_field(board_grid, 1, 0, "Trạng thái FEN:", self._fen_status, essential)
+        self._side_to_move = QComboBox(essential)
         self._side_to_move.addItem("Không biết", None)
         self._side_to_move.addItem("Đỏ", "red")
         self._side_to_move.addItem("Đen", "black")
-        board_form.addRow("Lượt đi:", self._side_to_move)
-        self._corner_validation = QLabel("", content)
+        self._add_compact_field(board_grid, 1, 2, "Lượt đi:", self._side_to_move, essential)
+        self._position_complete = QCheckBox("Đủ toàn bộ thế cờ", essential)
+        self._fen_verified = QCheckBox("FEN đã đối chiếu ảnh", essential)
+        self._corners_verified = QCheckBox("Góc đã đối chiếu", essential)
+        verification_row = QHBoxLayout()
+        verification_row.setContentsMargins(0, 0, 0, 0)
+        verification_row.addWidget(self._position_complete)
+        verification_row.addWidget(self._corners_verified)
+        verification_row.addWidget(self._fen_verified)
+        verification_row.addStretch(1)
+        essential_layout.addLayout(verification_row)
+        self._corner_validation = QLabel("", essential)
         self._corner_validation.setWordWrap(True)
-        board_form.addRow("Kiểm tra góc:", self._corner_validation)
-        self._fen_validation = QLabel("", content)
+        essential_layout.addWidget(self._corner_validation)
+        self._fen_validation = QLabel("", essential)
         self._fen_validation.setWordWrap(True)
-        board_form.addRow("Kiểm tra board:", self._fen_validation)
+        essential_layout.addWidget(self._fen_validation)
+        self._review_status = self._combo(REVIEW_STATUS_OPTIONS, essential)
+        review_grid = QGridLayout()
+        self._add_compact_field(review_grid, 0, 0, "Review:", self._review_status, essential)
+        essential_layout.addLayout(review_grid)
+        essential_layout.addStretch(1)
 
-        capture_label = QLabel("Điều kiện chụp", content)
-        capture_label.setStyleSheet("font-weight: bold; margin-top: 8px;")
-        layout.addWidget(capture_label)
-        capture_form = QFormLayout()
-        layout.addLayout(capture_form)
+        capture = QWidget(self._workflow_tabs)
+        capture_layout = QVBoxLayout(capture)
+        capture_layout.setContentsMargins(6, 6, 6, 6)
+        capture_layout.setSpacing(6)
+        capture_hint = QLabel("Mô tả nhanh ảnh và điều kiện chụp chính.", capture)
+        capture_hint.setStyleSheet("color: #666;")
+        capture_layout.addWidget(capture_hint)
+        capture_grid = QGridLayout()
+        capture_grid.setHorizontalSpacing(8)
+        capture_grid.setVerticalSpacing(4)
+        capture_layout.addLayout(capture_grid)
         self._capture_controls: dict[str, QComboBox] = {}
-        for field, choices in CAPTURE_OPTIONS.items():
-            combo = self._combo(choices, content)
+        primary_capture_fields = (
+            "lighting",
+            "perspective",
+            "board_fill",
+            "blur",
+            "occlusion",
+            "environment",
+        )
+        advanced_capture_fields = tuple(field for field in CAPTURE_OPTIONS if field not in primary_capture_fields)
+        for index, field in enumerate(primary_capture_fields):
+            combo = self._combo(CAPTURE_OPTIONS[field], capture)
             self._capture_controls[field] = combo
-            capture_form.addRow(f"{_FIELD_LABELS[field]}:", combo)
+            self._add_compact_field(
+                capture_grid, index // 2, (index % 2) * 2, f"{_FIELD_LABELS[field]}:", combo, capture
+            )
 
-        self._device_model = self._editable_combo(["unknown"], content)
-        capture_form.addRow("Thiết bị:", self._device_model)
-        self._capture_group = self._editable_combo([], content)
+        self._device_model = self._editable_combo(["unknown"], capture)
+        self._add_compact_field(capture_grid, 3, 0, "Thiết bị:", self._device_model, capture)
+        self._capture_group = self._editable_combo([], capture)
         self._capture_group.setPlaceholderText("Không nhóm")
-        capture_form.addRow("Nhóm chụp:", self._capture_group)
-
-        review_label = QLabel("Review", content)
-        review_label.setStyleSheet("font-weight: bold; margin-top: 8px;")
-        layout.addWidget(review_label)
-        review_form = QFormLayout()
-        layout.addLayout(review_form)
-        self._review_status = self._combo(REVIEW_STATUS_OPTIONS, content)
-        review_form.addRow("Trạng thái:", self._review_status)
-        self._fen_verified = QCheckBox("FEN đã đối chiếu ảnh", content)
-        review_form.addRow(self._fen_verified)
-        self._corners_verified = QCheckBox("Góc đã đối chiếu", content)
-        review_form.addRow(self._corners_verified)
-        self._exclude_gold = QCheckBox("Loại khỏi gold set", content)
-        review_form.addRow(self._exclude_gold)
-        self._exclusion_reason = QLineEdit(content)
-        self._exclusion_reason.setPlaceholderText("Lý do nếu loại")
-        review_form.addRow("Lý do:", self._exclusion_reason)
-        self._notes = QTextEdit(content)
-        self._notes.setAcceptRichText(False)
-        self._notes.setPlaceholderText("Ghi chú review (tùy chọn)")
-        self._notes.setFixedHeight(74)
-        review_form.addRow("Ghi chú:", self._notes)
-
+        self._add_compact_field(capture_grid, 3, 2, "Nhóm chụp:", self._capture_group, capture)
         template_row = QHBoxLayout()
-        next_button = QPushButton("Áp dụng điều kiện cho ảnh tiếp theo", content)
+        next_button = QPushButton("Áp dụng cho ảnh tiếp", capture)
+        next_button.setToolTip("Áp dụng điều kiện chụp này cho ảnh tiếp theo")
         next_button.clicked.connect(self.applyNextRequested)
         template_row.addWidget(next_button)
-        range_button = QPushButton("Áp dụng cho dải…", content)
+        range_button = QPushButton("Áp dụng cho dải…", capture)
         range_button.clicked.connect(self.applyRangeRequested)
         template_row.addWidget(range_button)
-        layout.addLayout(template_row)
-        layout.addStretch(1)
+        template_row.addStretch(1)
+        capture_layout.addLayout(template_row)
+        capture_layout.addStretch(1)
+
+        details = QWidget(self._workflow_tabs)
+        details_layout = QVBoxLayout(details)
+        details_layout.setContentsMargins(6, 6, 6, 6)
+        details_layout.setSpacing(6)
+        details_hint = QLabel("Chỉ điền khi quan sát thấy hoặc khi review cần ghi chú thêm.", details)
+        details_hint.setWordWrap(True)
+        details_hint.setStyleSheet("color: #666;")
+        details_layout.addWidget(details_hint)
+        details_grid = QGridLayout()
+        details_grid.setHorizontalSpacing(8)
+        details_grid.setVerticalSpacing(4)
+        details_layout.addLayout(details_grid)
+        for index, field in enumerate(advanced_capture_fields):
+            combo = self._combo(CAPTURE_OPTIONS[field], details)
+            self._capture_controls[field] = combo
+            self._add_compact_field(
+                details_grid, index // 2, (index % 2) * 2, f"{_FIELD_LABELS[field]}:", combo, details
+            )
+        self._exclude_gold = QCheckBox("Loại khỏi gold set", details)
+        details_layout.addWidget(self._exclude_gold)
+        self._exclusion_reason = QLineEdit(details)
+        self._exclusion_reason.setPlaceholderText("Lý do nếu loại")
+        exclusion_grid = QGridLayout()
+        self._add_compact_field(exclusion_grid, 0, 0, "Lý do:", self._exclusion_reason, details)
+        details_layout.addLayout(exclusion_grid)
+        self._notes = QTextEdit(details)
+        self._notes.setAcceptRichText(False)
+        self._notes.setPlaceholderText("Ghi chú review (tùy chọn)")
+        self._notes.setFixedHeight(60)
+        details_layout.addWidget(self._notes)
+        self._workflow_tabs.addTab(essential, "Cần hoàn tất")
+        self._workflow_tabs.addTab(capture, "Điều kiện chụp")
+        self._workflow_tabs.addTab(details, "Bổ sung & review")
 
         for combo in [self._orientation, self._corner_status, self._fen_status, self._side_to_move, *self._capture_controls.values(),
                       self._device_model, self._capture_group, self._review_status]:
@@ -211,6 +268,21 @@ class MetadataPanel(QWidget):
         combo.setEditable(True)
         combo.addItems(values)
         return combo
+
+    @staticmethod
+    def _add_compact_field(
+        layout: QGridLayout,
+        row: int,
+        column: int,
+        label: str,
+        widget: QWidget,
+        parent: QWidget,
+    ) -> None:
+        """Place a label and input in one of two compact grid columns."""
+
+        layout.addWidget(QLabel(label, parent), row, column)
+        layout.addWidget(widget, row, column + 1)
+        layout.setColumnStretch(column + 1, 1)
 
     @staticmethod
     def _set_combo(combo: QComboBox, value: object, fallback: str = "unknown") -> None:

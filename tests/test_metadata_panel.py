@@ -20,3 +20,24 @@ def test_capture_dropdown_taxonomy_matches_the_persisted_schema():
         assert panel.values()["board"]["side_to_move"] is None
     finally:
         panel.close()
+
+
+def test_metadata_workflow_splits_required_capture_and_optional_review_fields():
+    _ensure_qapp()
+    panel = MetadataPanel()
+    try:
+        tabs = panel._workflow_tabs
+        assert [tabs.tabText(index) for index in range(tabs.count())] == [
+            "Cần hoàn tất",
+            "Điều kiện chụp",
+            "Bổ sung & review",
+        ]
+        assert tabs.currentIndex() == 0
+
+        essential, capture, details = (tabs.widget(index) for index in range(3))
+        assert essential.isAncestorOf(panel._orientation)
+        assert capture.isAncestorOf(panel._capture_controls["lighting"])
+        assert details.isAncestorOf(panel._capture_controls["shadow"])
+        assert details.isAncestorOf(panel._notes)
+    finally:
+        panel.close()
