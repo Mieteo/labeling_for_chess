@@ -8,12 +8,14 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from PIL import Image
 from PySide6.QtCore import QEvent, QRectF, QSettings, Qt
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QMessageBox
 
-from chess_labeler import yolo_io
+from chess_labeler import metadata, yolo_io
+import chess_labeler.main_window as main_window_module
 from chess_labeler.main_window import MainWindow
 
 
@@ -86,7 +88,7 @@ def test_right_sidebar_groups_annotation_tools_and_fen_into_two_tabs(main_window
     tabs = main_window._right_tabs
 
     assert tabs.count() == 2
-    assert [tabs.tabText(index) for index in range(tabs.count())] == ["Gán nhãn", "FEN"]
+    assert [tabs.tabText(index) for index in range(tabs.count())] == ["Gán nhãn", "Bàn cờ & FEN"]
     assert main_window._annotation_dock.minimumWidth() >= 520
     assert main_window._box_list_panel.parentWidget().objectName() == "boxesGroup"
     assert main_window._metadata_panel.parentWidget().objectName() == "captureConditionsGroup"
@@ -232,6 +234,88 @@ def test_delete_selected_box(main_window, labelimg_dataset):
     main_window._on_delete_requested()
 
     assert len(main_window._canvas.box_items()) == 1
+
+
+def _move_to_trash_by_unlink(path_text: str):
+    """Deterministic stand-in for the platform Recycle Bin in test folders."""
+
+    Path(path_text).unlink()
+    return True, ""
+
+
+def test_shift_delete_moves_image_and_both_sidecars_then_selects_next_image(
+    main_window, labelimg_dataset, monkeypatch
+):
+    main_window._open_directory(labelimg_dataset)
+    main_window._go_to_index(_index_of(main_window, "0001.jpg"))
+    image_path = labelimg_dataset / "0001.jpg"
+    label_path = yolo_io.label_path_for_image(image_path)
+    sidecar_path = metadata.metadata_path_for_image(image_path)
+    record = metadata.new_metadata(image_path, 640, 480)
+    metadata.save_metadata_atomic(image_path, record, expected_image_size=(640, 480))
+    assert label_path.exists() and sidecar_path.exists()
+
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        staticmethod(lambda *args, **kwargs: QMessageBox.StandardButton.Yes),
+    )
+    monkeypatch.setattr(
+        main_window_module.QFile,
+        "moveToTrash",
+        staticmethod(_move_to_trash_by_unlink),
+    )
+
+    QTest.keyClick(main_window._canvas, Qt.Key.Key_Delete, Qt.KeyboardModifier.ShiftModifier)
+
+    assert not image_path.exists()
+    assert not label_path.exists()
+    assert not sidecar_path.exists()
+    assert main_window._current_image_path.name == "0002.jpg"
+    assert all(path.name != "0001.jpg" for path in main_window._images)
+
+
+def test_shift_delete_cancel_keeps_current_image_and_selected_box(main_window, labelimg_dataset, monkeypatch):
+    main_window._open_directory(labelimg_dataset)
+    main_window._go_to_index(_index_of(main_window, "0001.jpg"))
+    box = main_window._canvas.box_items()[0]
+    main_window._canvas.select_box(box)
+    image_path = main_window._current_image_path
+
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        staticmethod(lambda *args, **kwargs: QMessageBox.StandardButton.No),
+    )
+    QTest.keyClick(main_window._canvas, Qt.Key.Key_Delete, Qt.KeyboardModifier.ShiftModifier)
+
+    assert image_path.exists()
+    assert main_window._current_image_path == image_path
+    assert len(main_window._canvas.box_items()) == 2
+
+
+def test_delete_only_image_resets_the_active_annotation_state(main_window, tmp_path, monkeypatch):
+    dataset = tmp_path / "one-image"
+    dataset.mkdir()
+    Image.new("RGB", (20, 20), (200, 200, 200)).save(dataset / "only.jpg")
+    main_window._open_directory(dataset)
+
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        staticmethod(lambda *args, **kwargs: QMessageBox.StandardButton.Yes),
+    )
+    monkeypatch.setattr(
+        main_window_module.QFile,
+        "moveToTrash",
+        staticmethod(_move_to_trash_by_unlink),
+    )
+    main_window._delete_current_image()
+
+    assert main_window._images == []
+    assert main_window._current_image_path is None
+    assert main_window._metadata is None
+    assert main_window._canvas.image_size() == (0, 0)
 
 
 def test_duplicate_selected_box(main_window, labelimg_dataset):

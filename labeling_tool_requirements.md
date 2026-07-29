@@ -773,14 +773,76 @@ liệu này:
 - `chess_labeler/board_editor.py`: board Xiangqi 9×10, FEN board, drag/click,
   bắt quân, palette, delete, lật hiển thị, undo/redo, copy FEN và validator
   cấu trúc.
-- `chess_labeler/metadata_panel.py`: taxonomy dropdown, orientation/review,
-  side-to-move, recent device/capture group và batch-apply có xác nhận.
+- `chess_labeler/metadata_panel.py`: một form không tab con/không cuộn, hướng
+  ảnh, trạng thái có/không của 4 góc và FEN, taxonomy điều kiện chụp tiếng Việt
+  (vẫn lưu mã schema tiếng Anh) và batch-apply có xác nhận.
 - `chess_labeler/main_window.py`: chỉ ghi `.txt` khi bbox thay đổi, chỉ ghi
-  `.meta.json` khi metadata thay đổi; metadata lỗi không bị ghi đè tự động.
+  `.meta.json` khi metadata thay đổi; metadata lỗi không bị ghi đè tự động;
+  có thao tác xóa ảnh an toàn bằng `Shift+Delete`.
 
 Lệnh kiểm thử đầy đủ:
 
 ```powershell
 python -m compileall -q chess_labeler
-pytest -q
+python -m pytest -q
 ```
+
+### 10.11. Cập nhật UX tối giản cho annotator (29/07/2026)
+
+Phần này **thay thế mọi yêu cầu mâu thuẫn** trước đó trong mục 10 về các tab
+metadata, dropdown trạng thái góc/FEN, lượt đi, review, thiết bị, nhóm chụp
+và loại khỏi gold set.
+
+#### Một form duy nhất, không cuộn
+
+- Khu vực metadata chỉ có **một form gọn**, không còn ba tab `Cần hoàn tất`,
+  `Điều kiện chụp`, `Bổ sung & review` và không dùng thanh cuộn nội bộ.
+- Form hiển thị đủ các trường ngay trong dock phải ở kích thước cửa sổ làm
+  việc chuẩn. Các điều kiện chụp nằm trong lưới hai cột.
+- Giữ `Ghi chú (tùy chọn)` ngắn, không gọi là review.
+
+#### 4 góc bàn cờ và FEN: chỉ có/không có
+
+- Hướng dẫn luôn hiển thị trong form: đưa chuột lên **bốn giao điểm lưới ngoài
+  cùng** của ảnh (không phải mép khung bàn), bấm `1` = trên-trái, `2` =
+  trên-phải, `3` = dưới-phải, `4` = dưới-trái; `0` xóa bốn góc sau xác nhận.
+  Canvas phải có focus; click lại vào ảnh nếu đang chọn dropdown hoặc nhập FEN.
+- Toolbar cũng có nút `Đánh dấu góc (1–4)` để đưa focus về canvas và nhắc lại
+  thứ tự phím, nên thao tác này không còn bị ẩn trong phím tắt.
+- Không còn dropdown `corners_status`. UI chỉ hiển thị `Đã đánh dấu (4/4)` hoặc
+  `Chưa đủ (n/4)` dựa trực tiếp trên các tọa độ góc. Lỗi hình học vẫn được báo
+  riêng để chặn dữ liệu sai rõ ràng.
+- Không còn dropdown `fen_status`, checkbox xác minh hay `position_complete`.
+  UI chỉ hiển thị `Đã có FEN` khi `board_fen` có giá trị, ngược lại là `Chưa có
+  FEN`; validator bàn cờ vẫn báo lỗi riêng.
+- Tab ngoài được đặt tên `Bàn cờ & FEN`. Nút `Mở FEN` dẫn trực tiếp tới tab;
+  `Xác nhận FEN` dùng cả thế cờ đầu đang hiển thị làm ground truth; `Bỏ FEN`
+  đưa ảnh về trạng thái chưa có FEN sau xác nhận.
+- Không nhập `side_to_move`. Với FEN mới/sửa/xác nhận, tool ghi
+  `side_to_move: null` và `full_fen: null`.
+
+#### Điều kiện chụp và tương thích sidecar
+
+- Mọi dropdown điều kiện chụp hiển thị tiếng Việt dễ hiểu. JSON vẫn lưu các mã
+  tiếng Anh ổn định (`even`, `indoor`, …) của schema v1 để không làm hỏng các
+  script downstream.
+- Không còn thu thập `device_model` hoặc `capture_group` trong UI. Giá trị v1
+  cũ được giữ khi mở/lưu sidecar để tương thích ngược; mẫu mới dùng mặc định
+  `unknown` và `null`.
+- Không còn UI `review`, `Loại khỏi gold set` hay lý do loại. Các trường review
+  v1 cũ được giữ để sidecar cũ vẫn mở được; trạng thái kỹ thuật về góc/FEN được
+  tool tự suy diễn nội bộ từ dữ liệu và validation, không yêu cầu annotator chọn.
+- Benchmark Phase 5 phải dùng 4 góc đủ/hợp lệ, `board_fen` có giá trị và board
+  không có lỗi. Nếu cần một quy trình QA hai người hoặc gold-holdout nghiêm
+  ngặt hơn, quy trình đó sẽ được bổ sung riêng thay vì làm nặng giao diện gán
+  nhãn ban đầu.
+
+#### Xóa ảnh khỏi tập dữ liệu
+
+- `Shift+Delete` (hoặc nút `Xóa ảnh`) hỏi xác nhận rồi chuyển ảnh hiện tại,
+  `<stem>.txt` và `<stem>.meta.json` đang tồn tại vào Thùng rác. Thao tác không
+  auto-save thay đổi chưa lưu trước khi xóa.
+- Nếu có ảnh khác cùng stem và sidecar tồn tại, tool chặn thao tác để tránh xóa
+  nhãn dùng chung. Sau khi xóa thành công, tool chọn ảnh kế tiếp; ở ảnh cuối,
+  tool chọn ảnh trước đó. Nếu không còn ảnh, canvas và trạng thái hiện tại được
+  reset.

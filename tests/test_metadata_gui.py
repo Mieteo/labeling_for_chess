@@ -50,7 +50,7 @@ def test_new_image_shows_starting_board_scaffold_without_creating_fen(main_windo
     assert not (labelimg_dataset / "0005.meta.json").exists()
 
 
-def test_metadata_only_save_preserves_yolo_bytes_and_round_trips_gold_fields(main_window, labelimg_dataset):
+def test_metadata_only_save_preserves_yolo_bytes_and_round_trips_simplified_fields(main_window, labelimg_dataset):
     main_window._open_directory(labelimg_dataset)
     main_window._go_to_index(_index_of(main_window, "0001.jpg"))
     yolo_before = (labelimg_dataset / "0001.txt").read_bytes()
@@ -60,17 +60,14 @@ def test_metadata_only_save_preserves_yolo_bytes_and_round_trips_gold_fields(mai
     main_window._on_board_changed(STARTING_BOARD_FEN, [])
 
     panel = main_window._metadata_panel
-    panel._orientation.setCurrentText("red_at_bottom")
-    panel._corner_status.setCurrentText("human_verified")
-    panel._corners_verified.setChecked(True)
-    panel._position_complete.setChecked(True)
-    panel._fen_status.setCurrentText("human_verified")
-    panel._fen_verified.setChecked(True)
-    panel._side_to_move.setCurrentIndex(panel._side_to_move.findData("red"))
-    panel._capture_controls["lighting"].setCurrentText("even")
-    panel._capture_controls["board_material"].setCurrentText("wood")
-    panel._device_model.setEditText("RTX phone test")
-    panel._review_status.setCurrentText("gold_verified")
+    panel._orientation.setCurrentIndex(panel._orientation.findData("red_at_bottom"))
+    panel._capture_controls["lighting"].setCurrentIndex(
+        panel._capture_controls["lighting"].findData("even")
+    )
+    panel._capture_controls["board_material"].setCurrentIndex(
+        panel._capture_controls["board_material"].findData("wood")
+    )
+    panel._notes.setText("Ảnh test")
     main_window._on_metadata_panel_changed()
 
     assert main_window._boxes_dirty is False
@@ -82,18 +79,49 @@ def test_metadata_only_save_preserves_yolo_bytes_and_round_trips_gold_fields(mai
     assert saved is not None
     assert saved.board.corners_status == "human_verified"
     assert saved.board.board_fen == STARTING_BOARD_FEN
-    assert saved.board.side_to_move == "red"
-    assert saved.board.full_fen == f"{STARTING_BOARD_FEN} w - - 0 1"
-    assert saved.review.status == "gold_verified"
+    assert saved.board.fen_status == "human_verified"
+    assert saved.board.position_complete is True
+    assert saved.board.side_to_move is None
+    assert saved.board.full_fen is None
+    assert saved.review.status == "unreviewed"
+    assert saved.review.corners_verified is True
+    assert saved.review.fen_verified is True
     assert saved.capture.lighting == "even"
-    assert saved.capture.device_model == "RTX phone test"
+    assert saved.capture.device_model == "unknown"
+    assert saved.review.notes == "Ảnh test"
 
     # Re-opening restores the raw points, the FEN state, and dropdown values.
     main_window._go_to_index(_index_of(main_window, "0002.jpg"))
     main_window._go_to_index(_index_of(main_window, "0001.jpg"))
     assert main_window._canvas.corner_points()["top_left"] == QPointF(50, 40)
     assert main_window._board_editor.board_fen == STARTING_BOARD_FEN
-    assert main_window._metadata_panel._capture_controls["lighting"].currentText() == "even"
+    assert main_window._metadata_panel._capture_controls["lighting"].currentData() == "even"
+
+
+def test_confirm_and_clear_fen_turn_the_scaffold_into_an_explicit_value(main_window, labelimg_dataset, monkeypatch):
+    main_window._open_directory(labelimg_dataset)
+    assert main_window._metadata.board.board_fen is None
+    assert main_window._metadata_panel._fen_presence.text() == "Chưa có FEN"
+
+    main_window._metadata_panel.openFenRequested.emit()
+    assert main_window._right_tabs.currentWidget().objectName() == "fenTab"
+
+    main_window._confirm_current_board_fen()
+
+    assert main_window._metadata.board.board_fen == STARTING_BOARD_FEN
+    assert main_window._metadata.board.side_to_move is None
+    assert main_window._metadata.board.full_fen is None
+    assert main_window._metadata_panel._fen_presence.text() == "Đã có FEN"
+
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        staticmethod(lambda *args, **kwargs: QMessageBox.StandardButton.Yes),
+    )
+    main_window._clear_current_board_fen()
+
+    assert main_window._metadata.board.board_fen is None
+    assert main_window._metadata_panel._fen_presence.text() == "Chưa có FEN"
 
 
 def test_corrupt_sidecar_is_not_overwritten_without_explicit_confirmation(

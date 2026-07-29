@@ -11,7 +11,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from PySide6.QtCore import QEvent, QPointF, QRectF, QSettings, Qt
+from PySide6.QtCore import QEvent, QFile, QPointF, QRectF, QSettings, Qt
 from PySide6.QtGui import QAction, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -23,12 +23,14 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QLabel,
     QInputDialog,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
     QPushButton,
     QSizePolicy,
     QStatusBar,
     QTabWidget,
+    QTextEdit,
     QToolBar,
     QVBoxLayout,
     QWidget,
@@ -69,8 +71,6 @@ class _BoxSnapshot:
 @dataclasses.dataclass(frozen=True)
 class _CornerSnapshot:
     corners: tuple[tuple[str, float, float] | None, ...]
-    corners_status: str
-    corners_verified: bool
 
 
 def _read_image_bgr(path: Path) -> np.ndarray | None:
@@ -236,7 +236,7 @@ class MainWindow(QMainWindow):
         self._metadata_panel.metadataChanged.connect(self._on_metadata_panel_changed)
         self._metadata_panel.applyNextRequested.connect(self._remember_capture_template_for_next)
         self._metadata_panel.applyRangeRequested.connect(self._apply_capture_template_to_range)
-        metadata_group = QGroupBox("Điều kiện chụp & review", annotation_tab)
+        metadata_group = QGroupBox("Bàn cờ & điều kiện chụp", annotation_tab)
         metadata_group.setObjectName("captureConditionsGroup")
         metadata_layout = QVBoxLayout(metadata_group)
         metadata_layout.setContentsMargins(6, 6, 6, 6)
@@ -250,7 +250,10 @@ class MainWindow(QMainWindow):
         fen_layout.addWidget(self._board_editor)
 
         self._right_tabs.addTab(annotation_tab, "Gán nhãn")
-        self._right_tabs.addTab(fen_tab, "FEN")
+        self._right_tabs.addTab(fen_tab, "Bàn cờ & FEN")
+        self._metadata_panel.openFenRequested.connect(lambda: self._right_tabs.setCurrentWidget(fen_tab))
+        self._metadata_panel.confirmFenRequested.connect(self._confirm_current_board_fen)
+        self._metadata_panel.clearFenRequested.connect(self._clear_current_board_fen)
         self._annotation_dock = QDockWidget("Thông tin gán nhãn", self)
         self._annotation_dock.setObjectName("annotationDock")
         self._annotation_dock.setMinimumWidth(520)
@@ -281,6 +284,13 @@ class MainWindow(QMainWindow):
         self._autosave_action.setChecked(True)
         toolbar.addAction(self._autosave_action)
 
+        delete_image_action = QAction("Xóa ảnh (Shift+Delete)", self)
+        delete_image_action.setToolTip(
+            "Chuyển ảnh hiện tại cùng file .txt và .meta.json vào Thùng rác"
+        )
+        delete_image_action.triggered.connect(self._delete_current_image)
+        toolbar.addAction(delete_image_action)
+
         toolbar.addSeparator()
 
         prev_action = QAction("Ảnh trước (←)", self)
@@ -299,6 +309,13 @@ class MainWindow(QMainWindow):
         draw_action.setShortcut(QKeySequence("W"))
         draw_action.triggered.connect(self._enter_draw_mode)
         toolbar.addAction(draw_action)
+
+        corner_action = QAction("Đánh dấu góc (1–4)", self)
+        corner_action.setToolTip(
+            "Đưa chuột lên ảnh rồi bấm 1=trên-trái, 2=trên-phải, 3=dưới-phải, 4=dưới-trái"
+        )
+        corner_action.triggered.connect(self._focus_canvas_for_corners)
+        toolbar.addAction(corner_action)
 
         self._duplicate_action = QAction("Nhân bản box (Ctrl+D)", self)
         self._duplicate_action.setShortcut(QKeySequence("Ctrl+D"))
@@ -514,18 +531,11 @@ class MainWindow(QMainWindow):
             list(corner_result.errors), [describe_validation_issue(issue) for issue in board_issues]
         )
 
-        corners_ready = (
-            corner_result.is_valid
-            and self._metadata.board.corners_status == "human_verified"
-            and self._metadata.review.corners_verified
-        )
-        fen_ready = (
-            self._metadata.board.board_fen is not None
-            and self._metadata.board.position_complete
-            and self._metadata.board.fen_status == "human_verified"
-            and self._metadata.review.fen_verified
-            and not board_issues
-        )
+        # The annotator sees only the meaningful binary state: four corners
+        # exist or they do not; a board FEN exists or it does not.  Geometry
+        # and board-validation warnings remain visible separately.
+        corners_ready = corner_result.is_valid
+        fen_ready = self._metadata.board.board_fen is not None and not board_issues
         ready = corners_ready and fen_ready
         missing: list[str] = []
         if not corners_ready:
@@ -533,6 +543,49 @@ class MainWindow(QMainWindow):
         if not fen_ready:
             missing.append("FEN")
         self._metadata_panel.set_completeness(ready, " & ".join(missing))
+
+    def _sync_legacy_metadata_state(self) -> None:
+        """Derive v1 status/review fields from the simplified UI state.
+
+        Existing sidecars remain schema-v1 compatible, but annotators no
+        longer need to understand or choose these implementation details.
+        """
+
+        if self._metadata is None:
+            return
+        record = self._metadata
+        corner_result = self._corner_validation()
+        corner_count = sum(point is not None for point in record.board.corners_px.values())
+        if corner_count == 0:
+            record.board.corners_status = "unmarked"
+            record.review.corners_verified = False
+        elif corner_result.is_valid:
+            record.board.corners_status = "human_verified"
+            record.review.corners_verified = True
+        else:
+            record.board.corners_status = "partial" if corner_count < len(metadata.CORNER_NAMES) else "human_marked"
+            record.review.corners_verified = False
+
+        board_issues = self._board_editor.validation_issues if record.board.board_fen else []
+        if record.board.board_fen is None:
+            record.board.fen_status = "not_started"
+            record.board.position_complete = False
+            record.review.fen_verified = False
+        elif board_issues:
+            record.board.fen_status = "human_marked"
+            record.board.position_complete = False
+            record.review.fen_verified = False
+        else:
+            record.board.fen_status = "human_verified"
+            record.board.position_complete = True
+            record.review.fen_verified = True
+
+        # Preserve old review decisions when they are still valid.  A gold
+        # record changed into an invalid/incomplete one must not remain gold.
+        if record.review.status == "gold_verified" and not (
+            record.review.corners_verified and record.review.fen_verified
+        ):
+            record.review.status = "needs_review"
 
     def _apply_panel_values_to_metadata(self) -> None:
         if self._metadata is None:
@@ -543,51 +596,10 @@ class MainWindow(QMainWindow):
         review_values = values["review"]
 
         self._metadata.board.image_orientation = str(board_values["image_orientation"])
-        self._metadata.board.corners_status = str(board_values["corners_status"])
-        self._metadata.board.fen_status = str(board_values["fen_status"])
-        self._metadata.board.position_complete = bool(board_values["position_complete"])
-        side = board_values["side_to_move"]
-        self._metadata.board.side_to_move = side if side in {"red", "black"} else None
         for field, value in capture_values.items():
             setattr(self._metadata.capture, field, value)
-        for field, value in review_values.items():
-            setattr(self._metadata.review, field, value)
-
-        # Keep full FEN deterministic and absent when the static photograph
-        # does not reveal whose turn it is.
-        if self._metadata.board.board_fen and self._metadata.board.side_to_move:
-            side_token = "w" if self._metadata.board.side_to_move == "red" else "b"
-            self._metadata.board.full_fen = (
-                f"{self._metadata.board.board_fen} {side_token} - - 0 1"
-            )
-        else:
-            self._metadata.board.full_fen = None
-
-        corner_result = self._corner_validation()
-        board_issues = self._board_editor.validation_issues if self._metadata.board.board_fen else []
-        if self._metadata.board.corners_status == "human_verified" and not corner_result.is_valid:
-            self._metadata.board.corners_status = "human_marked"
-        if self._metadata.review.corners_verified and (
-            not corner_result.is_valid or self._metadata.board.corners_status != "human_verified"
-        ):
-            self._metadata.review.corners_verified = False
-        if self._metadata.board.fen_status == "human_verified" and (
-            not self._metadata.board.position_complete
-            or self._metadata.board.board_fen is None
-            or board_issues
-        ):
-            self._metadata.board.fen_status = "human_marked"
-        if self._metadata.review.fen_verified and (
-            self._metadata.board.fen_status != "human_verified"
-            or not self._metadata.board.position_complete
-            or self._metadata.board.board_fen is None
-            or board_issues
-        ):
-            self._metadata.review.fen_verified = False
-        if self._metadata.review.status == "gold_verified" and not (
-            self._metadata.review.corners_verified and self._metadata.review.fen_verified
-        ):
-            self._metadata.review.status = "needs_review"
+        self._metadata.review.notes = str(review_values["notes"])
+        self._sync_legacy_metadata_state()
 
     def _on_metadata_panel_changed(self) -> None:
         if self._metadata is None:
@@ -602,33 +614,63 @@ class MainWindow(QMainWindow):
     def _on_board_changed(self, board_fen: str, issues: list[str]) -> None:
         if self._metadata is None:
             return
-        # First retain dropdown values (orientation, side to move, review),
-        # then make the direct board edit authoritative for the FEN itself.
+        # Retain visible conditions, then make the direct board edit
+        # authoritative. A static photo does not establish whose turn it is,
+        # so old full-FEN fields must not be left stale after an edit.
         self._apply_panel_values_to_metadata()
         self._metadata.board.board_fen = board_fen
-        self._metadata.board.fen_status = "human_marked"
-        self._metadata.review.fen_verified = False
-        if issues and self._metadata.review.status == "gold_verified":
-            self._metadata.review.status = "needs_review"
-        if self._metadata.board.side_to_move:
-            side_token = "w" if self._metadata.board.side_to_move == "red" else "b"
-            self._metadata.board.full_fen = f"{board_fen} {side_token} - - 0 1"
-        else:
-            self._metadata.board.full_fen = None
+        self._metadata.board.side_to_move = None
+        self._metadata.board.full_fen = None
+        self._sync_legacy_metadata_state()
         self._metadata_panel.set_values(self._metadata.to_dict())
         self._refresh_metadata_validation()
         self._mark_metadata_dirty()
 
+    def _confirm_current_board_fen(self) -> None:
+        """Persist the editor's current board, including an unchanged scaffold."""
+
+        if self._metadata is None:
+            return
+        self._apply_panel_values_to_metadata()
+        self._metadata.board.board_fen = self._board_editor.board_fen
+        self._metadata.board.side_to_move = None
+        self._metadata.board.full_fen = None
+        self._sync_legacy_metadata_state()
+        self._metadata_panel.set_values(self._metadata.to_dict())
+        self._refresh_metadata_validation()
+        self._mark_metadata_dirty()
+        self.statusBar().showMessage("Đã xác nhận FEN đang hiển thị.", 2500)
+
+    def _clear_current_board_fen(self) -> None:
+        if self._metadata is None or self._metadata.board.board_fen is None:
+            return
+        response = QMessageBox.question(
+            self,
+            "Bỏ FEN",
+            "Bỏ FEN đã xác nhận cho ảnh hiện tại? Bàn cờ sẽ trở về thế cờ đầu để làm khung nhập.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if response != QMessageBox.StandardButton.Yes:
+            return
+        self._metadata.board.board_fen = None
+        self._metadata.board.side_to_move = None
+        self._metadata.board.full_fen = None
+        self._board_editor.set_starting_position()
+        self._sync_legacy_metadata_state()
+        self._metadata_panel.set_values(self._metadata.to_dict())
+        self._refresh_metadata_validation()
+        self._mark_metadata_dirty()
+        self.statusBar().showMessage("Đã bỏ FEN của ảnh hiện tại.", 2500)
+
     def _snapshot_corners(self) -> _CornerSnapshot:
         if self._metadata is None:
-            return _CornerSnapshot((), "unmarked", False)
+            return _CornerSnapshot(())
         corners: list[tuple[str, float, float] | None] = []
         for name in metadata.CORNER_NAMES:
             point = self._metadata.board.corners_px[name]
             corners.append((name, point.x, point.y) if point is not None else None)
-        return _CornerSnapshot(
-            tuple(corners), self._metadata.board.corners_status, self._metadata.review.corners_verified
-        )
+        return _CornerSnapshot(tuple(corners))
 
     def _apply_corner_snapshot(self, snapshot: _CornerSnapshot) -> None:
         if self._metadata is None:
@@ -637,8 +679,7 @@ class MainWindow(QMainWindow):
         for name, value in zip(metadata.CORNER_NAMES, snapshot.corners):
             corners[name] = None if value is None else metadata.Point(value[1], value[2])
         self._metadata.board.corners_px = corners
-        self._metadata.board.corners_status = snapshot.corners_status
-        self._metadata.review.corners_verified = snapshot.corners_verified
+        self._sync_legacy_metadata_state()
         self._canvas.set_corner_points(self._corner_points_for_canvas())
         self._metadata_panel.set_values(self._metadata.to_dict())
         self._refresh_metadata_validation()
@@ -654,9 +695,7 @@ class MainWindow(QMainWindow):
             return
         self._push_corner_undo()
         self._metadata.board.corners_px[name] = metadata.Point(point.x(), point.y())
-        count = sum(value is not None for value in self._metadata.board.corners_px.values())
-        self._metadata.board.corners_status = "human_marked" if count == 4 else "partial"
-        self._metadata.review.corners_verified = False
+        self._sync_legacy_metadata_state()
         self._canvas.set_corner_points(self._corner_points_for_canvas())
         self._metadata_panel.set_values(self._metadata.to_dict())
         self._refresh_metadata_validation()
@@ -677,8 +716,7 @@ class MainWindow(QMainWindow):
             return
         self._push_corner_undo()
         self._metadata.board.corners_px = {name: None for name in metadata.CORNER_NAMES}
-        self._metadata.board.corners_status = "unmarked"
-        self._metadata.review.corners_verified = False
+        self._sync_legacy_metadata_state()
         self._canvas.set_corner_points({})
         self._metadata_panel.set_values(self._metadata.to_dict())
         self._refresh_metadata_validation()
@@ -827,6 +865,120 @@ class MainWindow(QMainWindow):
 
     def prev_image(self) -> None:
         self._go_to_index(self._current_index - 1)
+
+    def _delete_current_image(self) -> None:
+        """Move the current image and its two label sidecars to the Recycle Bin.
+
+        This deliberately bypasses the normal leave-image guard: when the
+        user asks to delete an image, unsaved canvas/metadata changes must not
+        be auto-saved immediately before the destructive action.
+        """
+
+        if self._current_image_path is None or self._current_index < 0:
+            return
+        image_path = self._current_image_path
+        label_path = yolo_io.label_path_for_image(image_path)
+        sidecar_path = metadata.metadata_path_for_image(image_path)
+        companions = [path for path in (label_path, sidecar_path) if path.exists()]
+
+        same_stem = [
+            path
+            for path in self._images
+            if path != image_path and path.stem.casefold() == image_path.stem.casefold()
+        ]
+        if same_stem and companions:
+            QMessageBox.warning(
+                self,
+                "Không thể xóa an toàn",
+                "Có ảnh khác cùng tên gốc nên đang dùng chung file nhãn/metadata:\n"
+                + "\n".join(f"• {path.name}" for path in same_stem)
+                + "\n\nHãy đổi tên hoặc xử lý ảnh trùng tên trước để không làm mất dữ liệu của ảnh còn lại.",
+            )
+            return
+
+        targets = [image_path, *companions]
+        target_lines = "\n".join(f"• {path.name}" for path in targets)
+        response = QMessageBox.question(
+            self,
+            "Xóa ảnh hiện tại",
+            f"Chuyển các file sau vào Thùng rác?\n\n{target_lines}"
+            "\n\nCác thay đổi chưa lưu của ảnh này sẽ bị bỏ.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if response != QMessageBox.StandardButton.Yes:
+            return
+
+        moved: list[Path] = []
+        failures: list[str] = []
+        for path in targets:
+            try:
+                outcome = QFile.moveToTrash(str(path))
+                success = outcome[0] if isinstance(outcome, tuple) else bool(outcome)
+            except Exception as exc:  # pragma: no cover - platform/Qt boundary
+                success = False
+                failures.append(f"{path.name}: {exc}")
+            if success:
+                moved.append(path)
+            elif not failures or not failures[-1].startswith(f"{path.name}:"):
+                failures.append(path.name)
+
+        image_moved = image_path in moved
+        if image_moved:
+            self._remove_deleted_image_from_ui(image_path)
+
+        if failures:
+            moved_text = ", ".join(path.name for path in moved) or "không có file nào"
+            QMessageBox.warning(
+                self,
+                "Xóa chưa hoàn tất",
+                "Đã chuyển vào Thùng rác: "
+                + moved_text
+                + "\nKhông thể chuyển: "
+                + ", ".join(failures)
+                + "\n\nCác file đã chuyển có thể khôi phục từ Thùng rác.",
+            )
+            return
+
+        self.statusBar().showMessage(f"Đã chuyển {image_path.name} và dữ liệu liên quan vào Thùng rác.", 3500)
+
+    def _remove_deleted_image_from_ui(self, image_path: Path) -> None:
+        """Refresh navigation after the primary image has left its folder."""
+
+        try:
+            deleted_index = self._images.index(image_path)
+        except ValueError:
+            return
+        self._images.pop(deleted_index)
+        self._file_list_panel.set_images(self._images)
+        if self._images:
+            # Same index means the next image; after the final image, use the
+            # now-last entry (the prior image).
+            self._load_image_at(min(deleted_index, len(self._images) - 1))
+            return
+
+        self._current_index = -1
+        self._current_image_path = None
+        self._current_image_bgr = None
+        self._metadata = None
+        self._metadata_load_error = None
+        self._boxes_dirty = False
+        self._metadata_dirty = False
+        self._dirty = False
+        self._undo_stack.clear()
+        self._redo_stack.clear()
+        self._corner_undo_stack.clear()
+        self._corner_redo_stack.clear()
+        self._canvas.load_image(QPixmap())
+        self._box_list_panel.set_boxes([])
+        self._board_editor.set_starting_position()
+        self._metadata_panel.set_values({})
+        self._metadata_panel.set_validation([], [])
+        self._metadata_panel.set_completeness(False, "chưa có ảnh")
+        self._update_window_title()
+        self._update_undo_redo_actions()
+        self._update_corner_undo_actions()
+        self._save_session_state()
 
     # ------------------------------------------------------------------
     # Save
@@ -1115,6 +1267,16 @@ class MainWindow(QMainWindow):
         self._canvas.set_mode(CanvasMode.DRAW_BOX)
         self.statusBar().showMessage("Chế độ vẽ box: kéo chuột để vẽ 1 box mới.", 3000)
 
+    def _focus_canvas_for_corners(self) -> None:
+        if self._current_image_path is None:
+            self.statusBar().showMessage("Hãy mở thư mục ảnh trước khi đánh dấu góc.", 2500)
+            return
+        self._canvas.setFocus()
+        self.statusBar().showMessage(
+            "Đưa chuột lên ảnh: 1=trên-trái, 2=trên-phải, 3=dưới-phải, 4=dưới-trái.",
+            4500,
+        )
+
     def _start_measure_radius(self) -> None:
         self._canvas.set_mode(CanvasMode.MEASURE_RADIUS)
         self.statusBar().showMessage("Kéo chuột quanh 1 quân cờ mẫu rõ nét để đo bán kính...", 4000)
@@ -1189,6 +1351,28 @@ class MainWindow(QMainWindow):
         if event.type() == QEvent.Type.KeyPress:
             key = event.key()
             modifiers = event.modifiers()
+            shift_delete = (
+                key == Qt.Key.Key_Delete
+                and bool(modifiers & Qt.KeyboardModifier.ShiftModifier)
+                and not bool(
+                    modifiers
+                    & (
+                        Qt.KeyboardModifier.ControlModifier
+                        | Qt.KeyboardModifier.AltModifier
+                        | Qt.KeyboardModifier.MetaModifier
+                    )
+                )
+            )
+            focus = QApplication.focusWidget()
+            if shift_delete and QApplication.activeModalWidget() is None and not isinstance(
+                focus, (QLineEdit, QTextEdit)
+            ):
+                # Consume this before ImageCanvas/board-editor sees Delete;
+                # plain Delete keeps its existing meaning of deleting a box or
+                # a selected chess piece.
+                self._delete_current_image()
+                return True
+
             ctrl_held = bool(modifiers & Qt.KeyboardModifier.ControlModifier)
             other_modifiers_held = bool(
                 modifiers & (Qt.KeyboardModifier.AltModifier | Qt.KeyboardModifier.MetaModifier)
