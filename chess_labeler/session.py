@@ -24,12 +24,19 @@ class SessionState:
     last_image: str | None = None  # filename only, relative to the image dir
     last_radius_px: float | None = None
     last_tolerance_pct: float | None = None
+    # Convenience-only values for the metadata UI. They are never labels,
+    # never used to decide progress, and contain only annotator-entered device
+    # family / capture-session names (not EXIF, GPS, or personal IDs).
+    recent_device_models: list[str] = dataclasses.field(default_factory=list)
+    recent_capture_groups: list[str] = dataclasses.field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
             "last_image": self.last_image,
             "last_radius_px": self.last_radius_px,
             "last_tolerance_pct": self.last_tolerance_pct,
+            "recent_device_models": list(self.recent_device_models),
+            "recent_capture_groups": list(self.recent_capture_groups),
         }
 
     @classmethod
@@ -38,7 +45,33 @@ class SessionState:
             last_image=data.get("last_image"),
             last_radius_px=data.get("last_radius_px"),
             last_tolerance_pct=data.get("last_tolerance_pct"),
+            recent_device_models=_clean_recent_values(data.get("recent_device_models")),
+            recent_capture_groups=_clean_recent_values(data.get("recent_capture_groups")),
         )
+
+
+def _clean_recent_values(value: object, limit: int = 12) -> list[str]:
+    """Recover a small, safe recent-value list from old/corrupt sessions."""
+    if not isinstance(value, list):
+        return []
+    cleaned: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        text = item.strip()
+        if text and text not in cleaned:
+            cleaned.append(text)
+        if len(cleaned) >= limit:
+            break
+    return cleaned
+
+
+def add_recent_value(values: list[str], value: str | None, limit: int = 12) -> list[str]:
+    """Return an MRU-style recent list without mutating the caller's list."""
+    text = (value or "").strip()
+    if not text or text == "unknown":
+        return _clean_recent_values(values, limit)
+    return _clean_recent_values([text, *values], limit)
 
 
 def session_path(image_dir: Path | str) -> Path:

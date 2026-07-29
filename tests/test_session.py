@@ -64,3 +64,16 @@ def test_session_file_is_not_source_of_truth_for_progress(tmp_path: Path):
     session.save_session(tmp_path, session.SessionState(last_image="0003.jpg"))
     resume = session.find_resume_image(tmp_path)
     assert resume.name == "0002.jpg"
+
+
+def test_recent_metadata_values_roundtrip_and_stay_small_mru_lists(tmp_path: Path):
+    state = session.SessionState(
+        recent_device_models=["Phone A", "Phone B"],
+        recent_capture_groups=["set-1"],
+    )
+    session.save_session(tmp_path, state)
+    assert session.load_session(tmp_path) == state
+
+    updated = session.add_recent_value(state.recent_device_models, "Phone B")
+    assert updated == ["Phone B", "Phone A"]
+    assert session.add_recent_value(updated, "unknown") == updated

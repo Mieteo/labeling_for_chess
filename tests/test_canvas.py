@@ -1,8 +1,9 @@
-from PySide6.QtCore import QRectF
-from PySide6.QtGui import QPainter, QPixmap
+from PySide6.QtCore import QEvent, QPointF, QRectF, Qt
+from PySide6.QtGui import QKeyEvent, QPainter, QPixmap
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
-from chess_labeler.canvas import BoxItem
+from chess_labeler.canvas import BoxItem, ImageCanvas
 
 
 def _ensure_qapp():
@@ -68,3 +69,75 @@ def test_paint_and_bounding_rect_do_not_crash_for_a_box_glued_to_the_image_corne
         bounding = box.boundingRect()
         assert bounding.width() > 0 and bounding.height() > 0
         _render(box)
+
+
+def test_corner_hotkeys_store_raw_image_coordinates_and_overlay_tracks_zoom():
+    app = _ensure_qapp()
+    canvas = ImageCanvas()
+    pixmap = QPixmap(100, 80)
+    pixmap.fill()
+    canvas.load_image(pixmap)
+    observed: list[tuple[str, QPointF]] = []
+    canvas.cornerRequested.connect(lambda name, point: observed.append((name, point)))
+
+    # The canvas receives a scene/image coordinate, independent of the view
+    # scale.  This is what metadata persistence must use as its canonical
+    # ground-truth coordinate system.
+    canvas._last_scene_pos = QPointF(37.25, 41.5)
+    app.sendEvent(canvas, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_1, Qt.KeyboardModifier.NoModifier, "1"))
+    assert observed == [("top_left", QPointF(37.25, 41.5))]
+
+    canvas.set_corner_points({"top_left": (37.25, 41.5), "bottom_right": (90.0, 70.0)})
+    before = canvas._corner_items["top_left"].rect().width()
+    canvas.set_zoom(3.0)
+    after = canvas._corner_items["top_left"].rect().width()
+    assert canvas.corner_points()["top_left"] == QPointF(37.25, 41.5)
+    assert after < before  # remains a three-screen-pixel-radius marker
+
+
+def test_corner_hotkey_maps_the_actual_pointer_through_zoom_and_pan():
+    app = _ensure_qapp()
+    canvas = ImageCanvas()
+    canvas.resize(280, 200)
+    pixmap = QPixmap(800, 600)
+    pixmap.fill()
+    canvas.load_image(pixmap)
+    canvas.show()
+    app.processEvents()
+    try:
+        target = QPointF(631.0, 417.0)
+        canvas.set_zoom(2.5)
+        canvas.centerOn(target)  # a non-default scroll/pan position
+        app.processEvents()
+
+        observed: list[QPointF] = []
+        canvas.cornerRequested.connect(lambda _name, point: observed.append(point))
+        QTest.mouseMove(canvas.viewport(), canvas.mapFromScene(target))
+        app.sendEvent(canvas, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_3, Qt.KeyboardModifier.NoModifier, "3"))
+
+        assert len(observed) == 1
+        # A viewport mouse event is integer-pixel based; after 2.5x zoom its
+        # inverse mapping can differ by a fractional source pixel, well below
+        # the one-image-pixel acceptance tolerance.
+        assert abs(observed[0].x() - target.x()) <= 1.0
+        assert abs(observed[0].y() - target.y()) <= 1.0
+    finally:
+        canvas.close()
+
+
+def test_corner_hotkey_outside_the_source_image_is_ignored_and_zero_requests_clear():
+    app = _ensure_qapp()
+    canvas = ImageCanvas()
+    pixmap = QPixmap(100, 80)
+    pixmap.fill()
+    canvas.load_image(pixmap)
+    observed: list[str] = []
+    cleared: list[bool] = []
+    canvas.cornerRequested.connect(lambda name, _point: observed.append(name))
+    canvas.clearCornersRequested.connect(lambda: cleared.append(True))
+
+    canvas._last_scene_pos = QPointF(101.0, 10.0)
+    app.sendEvent(canvas, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_2, Qt.KeyboardModifier.NoModifier, "2"))
+    app.sendEvent(canvas, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_0, Qt.KeyboardModifier.NoModifier, "0"))
+    assert observed == []
+    assert cleared == [True]

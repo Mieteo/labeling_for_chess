@@ -6,11 +6,12 @@ labeling_tool_requirements.md for the full behavioral spec this implements.
 from __future__ import annotations
 
 import dataclasses
+import copy
 from pathlib import Path
 
 import cv2
 import numpy as np
-from PySide6.QtCore import QEvent, QRectF, QSettings, Qt
+from PySide6.QtCore import QEvent, QPointF, QRectF, QSettings, Qt
 from PySide6.QtGui import QAction, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -19,6 +20,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QInputDialog,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -27,10 +29,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import circle_detect, session, yolo_io
+from . import circle_detect, metadata, session, yolo_io
+from .board_editor import STARTING_BOARD_FEN, XiangqiBoardEditor, describe_validation_issue
 from .canvas import BoxItem, CanvasMode, ImageCanvas
 from .constants import DEFAULT_RADIUS_TOLERANCE_PCT
 from .key_shortcuts import HAND_CLASS, resolve_piece_class
+from .metadata_panel import MetadataPanel
 from .panels import BoxListPanel, FileListPanel
 
 _ROLE_KEY_CODES = {
@@ -57,6 +61,13 @@ class _BoxSnapshot:
     confirmed: bool
 
 
+@dataclasses.dataclass(frozen=True)
+class _CornerSnapshot:
+    corners: tuple[tuple[str, float, float] | None, ...]
+    corners_status: str
+    corners_verified: bool
+
+
 def _read_image_bgr(path: Path) -> np.ndarray | None:
     """Unicode-path-safe read (cv2.imread mishandles non-ASCII paths on Windows)."""
     data = np.fromfile(str(path), dtype=np.uint8)
@@ -80,11 +91,22 @@ class MainWindow(QMainWindow):
         self._current_index: int = -1
         self._current_image_path: Path | None = None
         self._current_image_bgr: np.ndarray | None = None
+        self._metadata: metadata.ImageMetadata | None = None
+        self._metadata_load_error: metadata.MetadataError | None = None
+        # Keep image annotations and board-level metadata independently dirty.
+        # This prevents a metadata-only save from rewriting a legacy YOLO file.
+        self._boxes_dirty = False
+        self._metadata_dirty = False
         self._dirty = False
 
         self._undo_stack: list[list[_BoxSnapshot]] = []
         self._redo_stack: list[list[_BoxSnapshot]] = []
         self._pending_drag_snapshot: list[_BoxSnapshot] | None = None
+        self._corner_undo_stack: list[_CornerSnapshot] = []
+        self._corner_redo_stack: list[_CornerSnapshot] = []
+        self._pending_capture_template: dict[str, object] | None = None
+        self._recent_device_models: list[str] = []
+        self._recent_capture_groups: list[str] = []
 
         self._reference_radius_px: float | None = None
 
@@ -97,7 +119,9 @@ class MainWindow(QMainWindow):
         self._canvas.deleteRequested.connect(self._on_delete_requested)
         self._canvas.confirmRequested.connect(self._on_confirm_requested)
         self._canvas.boxSelected.connect(self._on_box_selected)
-        self._canvas.sceneModified.connect(self._mark_dirty)
+        self._canvas.sceneModified.connect(self._mark_boxes_dirty)
+        self._canvas.cornerRequested.connect(self._on_corner_requested)
+        self._canvas.clearCornersRequested.connect(self._clear_corners_with_confirmation)
 
         self._build_dock_panels()
         self._build_toolbar_and_actions()
@@ -109,6 +133,7 @@ class MainWindow(QMainWindow):
 
         self._update_window_title()
         self._update_undo_redo_actions()
+        self._update_corner_undo_actions()
         self._resume_last_directory()
 
     def _resume_last_directory(self) -> None:
@@ -172,6 +197,27 @@ class MainWindow(QMainWindow):
         assist_dock.setWidget(assist)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, assist_dock)
 
+        self._board_editor = XiangqiBoardEditor(self)
+        self._board_editor.boardChanged.connect(self._on_board_changed)
+        board_dock = QDockWidget("Bàn cờ số hóa & FEN", self)
+        board_dock.setWidget(self._board_editor)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, board_dock)
+
+        self._metadata_panel = MetadataPanel(self)
+        self._metadata_panel.metadataChanged.connect(self._on_metadata_panel_changed)
+        self._metadata_panel.applyNextRequested.connect(self._remember_capture_template_for_next)
+        self._metadata_panel.applyRangeRequested.connect(self._apply_capture_template_to_range)
+        metadata_dock = QDockWidget("Điều kiện chụp & review", self)
+        metadata_dock.setWidget(self._metadata_panel)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, metadata_dock)
+
+        # Keep the original class / assist tools immediately available; the
+        # board and long metadata form remain in their own vertically stacked
+        # dock sections instead of covering the source image.
+        self.splitDockWidget(box_dock, assist_dock, Qt.Orientation.Vertical)
+        self.splitDockWidget(assist_dock, board_dock, Qt.Orientation.Vertical)
+        self.splitDockWidget(board_dock, metadata_dock, Qt.Orientation.Vertical)
+
     def _build_toolbar_and_actions(self) -> None:
         toolbar = QToolBar("Main", self)
         self.addToolBar(toolbar)
@@ -232,6 +278,16 @@ class MainWindow(QMainWindow):
         self._redo_action.triggered.connect(self.redo)
         toolbar.addAction(self._redo_action)
 
+        self._corner_undo_action = QAction("Undo góc", self)
+        self._corner_undo_action.setShortcut(QKeySequence("Ctrl+Alt+Z"))
+        self._corner_undo_action.triggered.connect(self.undo_corners)
+        toolbar.addAction(self._corner_undo_action)
+
+        self._corner_redo_action = QAction("Redo góc", self)
+        self._corner_redo_action.setShortcut(QKeySequence("Ctrl+Alt+Shift+Z"))
+        self._corner_redo_action.triggered.connect(self.redo_corners)
+        toolbar.addAction(self._corner_redo_action)
+
         toolbar.addSeparator()
 
         zoom_in = QAction("Zoom +", self)
@@ -287,6 +343,9 @@ class MainWindow(QMainWindow):
             self._radius_spin.blockSignals(False)
         if state.last_tolerance_pct:
             self._tolerance_spin.setValue(state.last_tolerance_pct)
+        self._recent_device_models = list(state.recent_device_models)
+        self._recent_capture_groups = list(state.recent_capture_groups)
+        self._metadata_panel.set_recent_values(self._recent_device_models, self._recent_capture_groups)
 
         if not self._images:
             QMessageBox.information(
@@ -313,16 +372,34 @@ class MainWindow(QMainWindow):
         self._current_image_path = path
         self._current_image_bgr = None
         self._canvas.load_image(pixmap)
+        sidecar_found = self._load_metadata_for_current_image(path, pixmap.width(), pixmap.height())
 
         for box in yolo_io.load_boxes(path):
             left, top, w, h = box.to_pixel_rect(pixmap.width(), pixmap.height())
             name = yolo_io.class_name(self._classes, box.class_id)
-            self._canvas.add_box_item(QRectF(left, top, w, h), class_name=name, confirmed=True)
+            self._canvas.add_box_item(
+                QRectF(left, top, w, h), class_name=name, confirmed=True, emit_modified=False
+            )
 
         self._undo_stack.clear()
         self._redo_stack.clear()
         self._pending_drag_snapshot = None
+        self._corner_undo_stack.clear()
+        self._corner_redo_stack.clear()
+        self._boxes_dirty = False
+        self._metadata_dirty = False
         self._dirty = False
+
+        # "Apply conditions to next" only fills a genuinely new sidecar; it
+        # never silently changes tags a user already stored for this image.
+        if self._pending_capture_template is not None and not sidecar_found and self._metadata is not None:
+            for field, value in self._pending_capture_template.items():
+                setattr(self._metadata.capture, field, copy.deepcopy(value))
+            self._pending_capture_template = None
+            self._metadata_panel.set_values(self._metadata.to_dict())
+            self._refresh_metadata_validation()
+            self._metadata_dirty = True
+            self._dirty = True
 
         self._file_list_panel.set_current_index(index)
         self._refresh_box_list()
@@ -330,12 +407,350 @@ class MainWindow(QMainWindow):
         self._canvas.setFocus()
         self._update_window_title()
         self._update_undo_redo_actions()
+        self._update_corner_undo_actions()
         self._save_session_state()
 
     def _ensure_image_bgr(self) -> np.ndarray | None:
         if self._current_image_bgr is None and self._current_image_path is not None:
             self._current_image_bgr = _read_image_bgr(self._current_image_path)
         return self._current_image_bgr
+
+    # ------------------------------------------------------------------
+    # Optional board-level metadata sidecar
+    # ------------------------------------------------------------------
+    def _load_metadata_for_current_image(self, path: Path, width: int, height: int) -> bool:
+        """Load a valid sidecar or construct a clean, unsaved draft.
+
+        A malformed existing file is never silently treated as a normal
+        missing sidecar: the UI stays usable with a fresh in-memory draft but
+        remembers the error and requires an explicit overwrite confirmation
+        at save time.
+        """
+        result = metadata.try_load_metadata(path, expected_image_size=(width, height))
+        self._metadata_load_error = result.error
+        self._metadata = result.metadata or metadata.new_metadata(path, width, height)
+
+        self._canvas.set_corner_points(self._corner_points_for_canvas())
+        board_fen = self._metadata.board.board_fen or STARTING_BOARD_FEN
+        try:
+            self._board_editor.set_board_fen(board_fen)
+        except ValueError:
+            # This should only be reachable if a future schema becomes less
+            # strict. Preserve the sidecar warning rather than crashing the
+            # labeling workflow.
+            self._board_editor.set_starting_position()
+        self._metadata_panel.set_values(self._metadata.to_dict())
+        self._refresh_metadata_validation()
+        if result.error is not None:
+            self.statusBar().showMessage(
+                f"Metadata lỗi ở {metadata.metadata_path_for_image(path).name}: {result.error}", 7000
+            )
+        return result.found
+
+    def _corner_points_for_canvas(self) -> dict[str, tuple[float, float]]:
+        if self._metadata is None:
+            return {}
+        return {
+            name: (point.x, point.y)
+            for name, point in self._metadata.board.corners_px.items()
+            if point is not None
+        }
+
+    def _corner_validation(self) -> metadata.CornerValidation:
+        if self._metadata is None:
+            return metadata.CornerValidation(errors=("metadata_not_loaded",))
+        return metadata.validate_corners(
+            self._metadata.board.corners_px,
+            self._metadata.image.width_px,
+            self._metadata.image.height_px,
+        )
+
+    def _refresh_metadata_validation(self) -> None:
+        if self._metadata is None:
+            return
+        corner_result = self._corner_validation()
+        board_issues = self._board_editor.validation_issues if self._metadata.board.board_fen else []
+        self._metadata_panel.set_validation(
+            list(corner_result.errors), [describe_validation_issue(issue) for issue in board_issues]
+        )
+
+        corners_ready = (
+            corner_result.is_valid
+            and self._metadata.board.corners_status == "human_verified"
+            and self._metadata.review.corners_verified
+        )
+        fen_ready = (
+            self._metadata.board.board_fen is not None
+            and self._metadata.board.position_complete
+            and self._metadata.board.fen_status == "human_verified"
+            and self._metadata.review.fen_verified
+            and not board_issues
+        )
+        ready = corners_ready and fen_ready
+        missing: list[str] = []
+        if not corners_ready:
+            missing.append("góc")
+        if not fen_ready:
+            missing.append("FEN")
+        self._metadata_panel.set_completeness(ready, " & ".join(missing))
+
+    def _apply_panel_values_to_metadata(self) -> None:
+        if self._metadata is None:
+            return
+        values = self._metadata_panel.values()
+        board_values = values["board"]
+        capture_values = values["capture"]
+        review_values = values["review"]
+
+        self._metadata.board.image_orientation = str(board_values["image_orientation"])
+        self._metadata.board.corners_status = str(board_values["corners_status"])
+        self._metadata.board.fen_status = str(board_values["fen_status"])
+        self._metadata.board.position_complete = bool(board_values["position_complete"])
+        side = board_values["side_to_move"]
+        self._metadata.board.side_to_move = side if side in {"red", "black"} else None
+        for field, value in capture_values.items():
+            setattr(self._metadata.capture, field, value)
+        for field, value in review_values.items():
+            setattr(self._metadata.review, field, value)
+
+        # Keep full FEN deterministic and absent when the static photograph
+        # does not reveal whose turn it is.
+        if self._metadata.board.board_fen and self._metadata.board.side_to_move:
+            side_token = "w" if self._metadata.board.side_to_move == "red" else "b"
+            self._metadata.board.full_fen = (
+                f"{self._metadata.board.board_fen} {side_token} - - 0 1"
+            )
+        else:
+            self._metadata.board.full_fen = None
+
+        corner_result = self._corner_validation()
+        board_issues = self._board_editor.validation_issues if self._metadata.board.board_fen else []
+        if self._metadata.board.corners_status == "human_verified" and not corner_result.is_valid:
+            self._metadata.board.corners_status = "human_marked"
+        if self._metadata.review.corners_verified and (
+            not corner_result.is_valid or self._metadata.board.corners_status != "human_verified"
+        ):
+            self._metadata.review.corners_verified = False
+        if self._metadata.board.fen_status == "human_verified" and (
+            not self._metadata.board.position_complete
+            or self._metadata.board.board_fen is None
+            or board_issues
+        ):
+            self._metadata.board.fen_status = "human_marked"
+        if self._metadata.review.fen_verified and (
+            self._metadata.board.fen_status != "human_verified"
+            or not self._metadata.board.position_complete
+            or self._metadata.board.board_fen is None
+            or board_issues
+        ):
+            self._metadata.review.fen_verified = False
+        if self._metadata.review.status == "gold_verified" and not (
+            self._metadata.review.corners_verified and self._metadata.review.fen_verified
+        ):
+            self._metadata.review.status = "needs_review"
+
+    def _on_metadata_panel_changed(self) -> None:
+        if self._metadata is None:
+            return
+        self._apply_panel_values_to_metadata()
+        # Reflect any guardrail correction (e.g. no verified FEN while the
+        # board has a structural warning) back into the controls.
+        self._metadata_panel.set_values(self._metadata.to_dict())
+        self._refresh_metadata_validation()
+        self._mark_metadata_dirty()
+
+    def _on_board_changed(self, board_fen: str, issues: list[str]) -> None:
+        if self._metadata is None:
+            return
+        # First retain dropdown values (orientation, side to move, review),
+        # then make the direct board edit authoritative for the FEN itself.
+        self._apply_panel_values_to_metadata()
+        self._metadata.board.board_fen = board_fen
+        self._metadata.board.fen_status = "human_marked"
+        self._metadata.review.fen_verified = False
+        if issues and self._metadata.review.status == "gold_verified":
+            self._metadata.review.status = "needs_review"
+        if self._metadata.board.side_to_move:
+            side_token = "w" if self._metadata.board.side_to_move == "red" else "b"
+            self._metadata.board.full_fen = f"{board_fen} {side_token} - - 0 1"
+        else:
+            self._metadata.board.full_fen = None
+        self._metadata_panel.set_values(self._metadata.to_dict())
+        self._refresh_metadata_validation()
+        self._mark_metadata_dirty()
+
+    def _snapshot_corners(self) -> _CornerSnapshot:
+        if self._metadata is None:
+            return _CornerSnapshot((), "unmarked", False)
+        corners: list[tuple[str, float, float] | None] = []
+        for name in metadata.CORNER_NAMES:
+            point = self._metadata.board.corners_px[name]
+            corners.append((name, point.x, point.y) if point is not None else None)
+        return _CornerSnapshot(
+            tuple(corners), self._metadata.board.corners_status, self._metadata.review.corners_verified
+        )
+
+    def _apply_corner_snapshot(self, snapshot: _CornerSnapshot) -> None:
+        if self._metadata is None:
+            return
+        corners: dict[str, metadata.Point | None] = {}
+        for name, value in zip(metadata.CORNER_NAMES, snapshot.corners):
+            corners[name] = None if value is None else metadata.Point(value[1], value[2])
+        self._metadata.board.corners_px = corners
+        self._metadata.board.corners_status = snapshot.corners_status
+        self._metadata.review.corners_verified = snapshot.corners_verified
+        self._canvas.set_corner_points(self._corner_points_for_canvas())
+        self._metadata_panel.set_values(self._metadata.to_dict())
+        self._refresh_metadata_validation()
+        self._mark_metadata_dirty()
+
+    def _push_corner_undo(self) -> None:
+        self._corner_undo_stack.append(self._snapshot_corners())
+        self._corner_redo_stack.clear()
+        self._update_corner_undo_actions()
+
+    def _on_corner_requested(self, name: str, point: QPointF) -> None:
+        if self._metadata is None or name not in metadata.CORNER_NAMES:
+            return
+        self._push_corner_undo()
+        self._metadata.board.corners_px[name] = metadata.Point(point.x(), point.y())
+        count = sum(value is not None for value in self._metadata.board.corners_px.values())
+        self._metadata.board.corners_status = "human_marked" if count == 4 else "partial"
+        self._metadata.review.corners_verified = False
+        self._canvas.set_corner_points(self._corner_points_for_canvas())
+        self._metadata_panel.set_values(self._metadata.to_dict())
+        self._refresh_metadata_validation()
+        self._mark_metadata_dirty()
+        self.statusBar().showMessage(f"Đã đặt {name}: ({point.x():.1f}, {point.y():.1f})", 2500)
+
+    def _clear_corners_with_confirmation(self) -> None:
+        if self._metadata is None or not any(self._metadata.board.corners_px.values()):
+            return
+        response = QMessageBox.question(
+            self,
+            "Xóa 4 góc",
+            "Xóa toàn bộ bốn góc của ảnh hiện tại?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if response != QMessageBox.StandardButton.Yes:
+            return
+        self._push_corner_undo()
+        self._metadata.board.corners_px = {name: None for name in metadata.CORNER_NAMES}
+        self._metadata.board.corners_status = "unmarked"
+        self._metadata.review.corners_verified = False
+        self._canvas.set_corner_points({})
+        self._metadata_panel.set_values(self._metadata.to_dict())
+        self._refresh_metadata_validation()
+        self._mark_metadata_dirty()
+
+    def undo_corners(self) -> None:
+        if not self._corner_undo_stack or self._metadata is None:
+            return
+        current = self._snapshot_corners()
+        previous = self._corner_undo_stack.pop()
+        self._corner_redo_stack.append(current)
+        self._apply_corner_snapshot(previous)
+        self._update_corner_undo_actions()
+
+    def redo_corners(self) -> None:
+        if not self._corner_redo_stack or self._metadata is None:
+            return
+        current = self._snapshot_corners()
+        following = self._corner_redo_stack.pop()
+        self._corner_undo_stack.append(current)
+        self._apply_corner_snapshot(following)
+        self._update_corner_undo_actions()
+
+    def _remember_capture_template_for_next(self) -> None:
+        self._pending_capture_template = copy.deepcopy(self._metadata_panel.capture_values())
+        self.statusBar().showMessage("Đã ghi nhớ điều kiện chụp cho ảnh mới kế tiếp.", 3000)
+
+    def _apply_capture_template_to_range(self) -> None:
+        if not self._images:
+            return
+        raw, accepted = QInputDialog.getText(
+            self,
+            "Áp dụng điều kiện chụp",
+            f"Nhập dải số theo danh sách ảnh 1–{len(self._images)} (ví dụ 5-12):",
+        )
+        if not accepted:
+            return
+        try:
+            first_text, last_text = raw.split("-", 1)
+            first, last = int(first_text.strip()), int(last_text.strip())
+        except ValueError:
+            QMessageBox.warning(self, "Dải không hợp lệ", "Dùng định dạng số-số, ví dụ 5-12.")
+            return
+        if first < 1 or last < first or last > len(self._images):
+            QMessageBox.warning(self, "Dải không hợp lệ", "Dải phải nằm trong danh sách ảnh hiện tại.")
+            return
+        targets = self._images[first - 1 : last]
+        confirm = QMessageBox.question(
+            self,
+            "Xác nhận batch apply",
+            f"Áp dụng điều kiện chụp hiện tại cho {len(targets)} ảnh?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        overwrite = QMessageBox.question(
+            self,
+            "Ghi đè dữ liệu đã có?",
+            "Có ghi đè các điều kiện khác 'unknown' / nhóm / thiết bị đã có không?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        ) == QMessageBox.StandardButton.Yes
+
+        template = copy.deepcopy(self._metadata_panel.capture_values())
+        changed_count = 0
+        skipped_count = 0
+        current_reloaded: metadata.ImageMetadata | None = None
+        for image_path in targets:
+            pixmap = QPixmap(str(image_path))
+            if pixmap.isNull():
+                skipped_count += 1
+                continue
+            result = metadata.try_load_metadata(
+                image_path, expected_image_size=(pixmap.width(), pixmap.height())
+            )
+            if result.error is not None:
+                skipped_count += 1
+                continue
+            record = result.metadata or metadata.new_metadata(image_path, pixmap.width(), pixmap.height())
+            changed = False
+            for field, value in template.items():
+                existing = getattr(record.capture, field)
+                if overwrite or existing in {"unknown", "", None}:
+                    if existing != value:
+                        setattr(record.capture, field, copy.deepcopy(value))
+                        changed = True
+            if not changed:
+                continue
+            try:
+                metadata.save_metadata_atomic(
+                    image_path, record, expected_image_size=(pixmap.width(), pixmap.height())
+                )
+            except metadata.MetadataError:
+                skipped_count += 1
+                continue
+            changed_count += 1
+            if image_path == self._current_image_path:
+                current_reloaded = record
+
+        if current_reloaded is not None:
+            self._metadata = current_reloaded
+            self._metadata_load_error = None
+            self._metadata_dirty = False
+            self._metadata_panel.set_values(self._metadata.to_dict())
+            self._refresh_metadata_validation()
+            self._sync_dirty_state()
+        self.statusBar().showMessage(
+            f"Đã áp dụng điều kiện cho {changed_count} ảnh"
+            + (f"; bỏ qua {skipped_count} ảnh lỗi." if skipped_count else "."),
+            5000,
+        )
 
     # ------------------------------------------------------------------
     # Navigation with unsaved-change guard
@@ -376,9 +791,53 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     # Save
     # ------------------------------------------------------------------
+    def _save_metadata_if_dirty(self) -> bool:
+        if not self._metadata_dirty:
+            return True
+        if self._metadata is None or self._current_image_path is None:
+            return True
+        if self._metadata_load_error is not None:
+            response = QMessageBox.warning(
+                self,
+                "Metadata sidecar lỗi",
+                "File metadata cũ có lỗi và chưa bị thay đổi. Bạn có muốn ghi đè nó bằng metadata đang mở không?\n\n"
+                f"Chi tiết: {self._metadata_load_error}",
+                QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if response != QMessageBox.StandardButton.Save:
+                return False
+        try:
+            metadata.save_metadata_atomic(
+                self._current_image_path,
+                self._metadata,
+                expected_image_size=self._canvas.image_size(),
+            )
+        except metadata.MetadataError as exc:
+            QMessageBox.warning(self, "Không thể lưu metadata", str(exc))
+            return False
+        self._metadata_load_error = None
+        self._metadata_dirty = False
+        self._board_editor.mark_clean()
+        self._recent_device_models = session.add_recent_value(
+            self._recent_device_models, self._metadata.capture.device_model
+        )
+        self._recent_capture_groups = session.add_recent_value(
+            self._recent_capture_groups, self._metadata.capture.capture_group
+        )
+        self._metadata_panel.set_recent_values(self._recent_device_models, self._recent_capture_groups)
+        return True
+
     def _save_current_image(self) -> bool:
         if self._current_image_path is None:
             return False
+        if not self._boxes_dirty:
+            if not self._save_metadata_if_dirty():
+                return False
+            self._sync_dirty_state()
+            self._save_session_state()
+            self.statusBar().showMessage(f"Đã lưu {self._current_image_path.name}.", 2500)
+            return True
         items = self._canvas.box_items()
         unclassified = [b for b in items if b.confirmed and not b.class_name]
         if unclassified:
@@ -402,8 +861,15 @@ class MainWindow(QMainWindow):
             boxes_to_save.append(yolo_io.Box.from_pixel_rect(class_id, r.x(), r.y(), r.width(), r.height(), w, h))
 
         yolo_io.save_boxes(self._current_image_path, boxes_to_save)
-        self._dirty = False
-        self._update_window_title()
+        self._boxes_dirty = False
+        if not self._save_metadata_if_dirty():
+            # The YOLO save has already succeeded. Keep only the metadata
+            # dirty flag so the next explicit save can safely retry it.
+            self._sync_dirty_state()
+            self._file_list_panel.refresh_label_at(self._current_index)
+            self._save_session_state()
+            return False
+        self._sync_dirty_state()
         self._file_list_panel.refresh_label_at(self._current_index)
         self._save_session_state()
         self.statusBar().showMessage(f"Đã lưu {self._current_image_path.name} ({len(boxes_to_save)} box).", 2500)
@@ -424,8 +890,9 @@ class MainWindow(QMainWindow):
             if resp != QMessageBox.StandardButton.Yes:
                 return
         yolo_io.save_boxes(self._current_image_path, [])
-        self._dirty = False
-        self._update_window_title()
+        self._boxes_dirty = False
+        self._save_metadata_if_dirty()
+        self._sync_dirty_state()
         self._file_list_panel.refresh_label_at(self._current_index)
         self._save_session_state()
         self.statusBar().showMessage("Đã lưu: không có đối tượng nào.", 2500)
@@ -437,15 +904,30 @@ class MainWindow(QMainWindow):
             last_image=self._current_image_path.name if self._current_image_path else None,
             last_radius_px=self._reference_radius_px,
             last_tolerance_pct=self._tolerance_spin.value(),
+            recent_device_models=self._recent_device_models,
+            recent_capture_groups=self._recent_capture_groups,
         )
         session.save_session(self._image_dir, state)
 
     # ------------------------------------------------------------------
     # Dirty / title
     # ------------------------------------------------------------------
-    def _mark_dirty(self) -> None:
-        self._dirty = True
+    def _sync_dirty_state(self) -> None:
+        self._dirty = self._boxes_dirty or self._metadata_dirty
         self._update_window_title()
+
+    def _mark_boxes_dirty(self) -> None:
+        self._boxes_dirty = True
+        self._sync_dirty_state()
+
+    def _mark_metadata_dirty(self) -> None:
+        self._metadata_dirty = True
+        self._sync_dirty_state()
+
+    # Existing box operations and third-party scripts call this name; it is
+    # deliberately kept as the box-dirty compatibility alias.
+    def _mark_dirty(self) -> None:
+        self._mark_boxes_dirty()
 
     def _update_window_title(self) -> None:
         name = self._current_image_path.name if self._current_image_path else "(chưa mở thư mục)"
@@ -473,7 +955,9 @@ class MainWindow(QMainWindow):
         self._canvas.clear_all_boxes()
         for snap in snapshot:
             x, y, w, h = snap.rect
-            self._canvas.add_box_item(QRectF(x, y, w, h), snap.class_name, snap.confirmed)
+            self._canvas.add_box_item(
+                QRectF(x, y, w, h), snap.class_name, snap.confirmed, emit_modified=False
+            )
         self._canvas.viewport().update()
 
     def _push_undo(self, before_snapshot: list[_BoxSnapshot]) -> None:
@@ -484,6 +968,10 @@ class MainWindow(QMainWindow):
     def _update_undo_redo_actions(self) -> None:
         self._undo_action.setEnabled(bool(self._undo_stack))
         self._redo_action.setEnabled(bool(self._redo_stack))
+
+    def _update_corner_undo_actions(self) -> None:
+        self._corner_undo_action.setEnabled(bool(self._corner_undo_stack))
+        self._corner_redo_action.setEnabled(bool(self._corner_redo_stack))
 
     def undo(self) -> None:
         if not self._undo_stack:

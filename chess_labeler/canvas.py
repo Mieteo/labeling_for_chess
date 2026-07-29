@@ -8,7 +8,7 @@ what those gestures mean (push undo snapshot, mark dirty, assign class...).
 from __future__ import annotations
 
 from enum import Enum, auto
-from typing import Callable
+from typing import Callable, Mapping
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QFont, QFontMetricsF, QPainter, QPen, QPixmap
@@ -29,6 +29,15 @@ HANDLE_SCREEN_SIZE = 9.0  # px, kept constant on screen regardless of zoom
 LABEL_FONT_SCREEN_PX = 9.0  # class-label glyph size, kept constant on screen
 LABEL_PADDING_SCREEN_PX = 2.0
 MIN_DRAG_PX = 3
+CORNER_MARKER_SCREEN_RADIUS = 3.0
+
+CORNER_ORDER = ("top_left", "top_right", "bottom_right", "bottom_left")
+_CORNER_COLORS = {
+    "top_left": QColor(76, 175, 80),
+    "top_right": QColor(33, 150, 243),
+    "bottom_right": QColor(255, 152, 0),
+    "bottom_left": QColor(156, 39, 176),
+}
 
 _PALETTE_BY_NAME = {
     "red_king": QColor(211, 47, 47),
@@ -298,6 +307,39 @@ class BoxItem(QGraphicsRectItem):
         event.accept()
 
 
+class CornerMarkerItem(QGraphicsRectItem):
+    """Small, filled corner marker anchored in image-pixel coordinates.
+
+    The marker geometry is recalculated by :class:`ImageCanvas` whenever
+    zoom changes, so it remains a compact three-pixel-radius dot on screen
+    while its centre stays exactly on the source image coordinate.
+    """
+
+    def __init__(self, corner_name: str, point: QPointF):
+        super().__init__()
+        self.corner_name = corner_name
+        self.point = QPointF(point)
+        color = _CORNER_COLORS.get(corner_name, QColor(255, 255, 255))
+        self.setPen(QPen(QColor(255, 255, 255)))
+        self.setBrush(QBrush(color))
+        self.setZValue(10000)
+        self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        self.setAcceptHoverEvents(True)
+        self.setToolTip(f"{corner_name}: ({point.x():.1f}, {point.y():.1f})")
+
+    def hoverEnterEvent(self, event) -> None:  # noqa: N802
+        self.setOpacity(1.0)
+        super().hoverEnterEvent(event)
+
+    def hoverLeaveEvent(self, event) -> None:  # noqa: N802
+        self.setOpacity(0.78)
+        super().hoverLeaveEvent(event)
+
+    def set_scene_radius(self, radius: float) -> None:
+        self.setRect(QRectF(self.point.x() - radius, self.point.y() - radius, radius * 2, radius * 2))
+        self.setOpacity(0.78)
+
+
 class CanvasMode(Enum):
     SELECT = auto()
     DRAW_BOX = auto()
@@ -311,6 +353,8 @@ class ImageCanvas(QGraphicsView):
     confirmRequested = Signal()
     boxSelected = Signal(object)  # BoxItem | None
     sceneModified = Signal()
+    cornerRequested = Signal(str, QPointF)  # canonical name, raw image pixel position
+    clearCornersRequested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -331,6 +375,8 @@ class ImageCanvas(QGraphicsView):
         self._draw_start_scene: QPointF | None = None
         self._temp_rect_item: QGraphicsRectItem | None = None
         self._current_scale = 1.0
+        self._last_scene_pos: QPointF | None = None
+        self._corner_items: dict[str, CornerMarkerItem] = {}
 
         # Wired up by MainWindow for undo-snapshot bracketing of live drags.
         self.on_drag_begin: Callable[[], None] | None = None
@@ -339,6 +385,7 @@ class ImageCanvas(QGraphicsView):
     # ---- image loading ----------------------------------------------
     def load_image(self, pixmap: QPixmap) -> None:
         self._scene.clear()
+        self._corner_items.clear()
         self._pixmap_item = QGraphicsPixmapItem(pixmap)
         self._pixmap_item.setZValue(-1)
         self._scene.addItem(self._pixmap_item)
@@ -347,6 +394,7 @@ class ImageCanvas(QGraphicsView):
         self._mode = CanvasMode.SELECT
         self._drawing = False
         self._temp_rect_item = None
+        self._last_scene_pos = None
 
     def image_size(self) -> tuple[int, int]:
         return self._image_size
@@ -355,8 +403,47 @@ class ImageCanvas(QGraphicsView):
         w, h = self._image_size
         return QRectF(0, 0, w, h)
 
+    # ---- board-corner overlay ------------------------------------------
+    def set_corner_points(self, points: Mapping[str, tuple[float, float] | QPointF] | None) -> None:
+        """Replace the four-corner overlay without changing image metadata.
+
+        ``points`` uses source-image pixels, never view/zoom coordinates.
+        This method is deliberately presentation-only; callers own validation
+        and persistence through the metadata sidecar.
+        """
+        for item in self._corner_items.values():
+            self._scene.removeItem(item)
+        self._corner_items.clear()
+        if not points:
+            return
+        for name in CORNER_ORDER:
+            value = points.get(name)
+            if value is None:
+                continue
+            point = value if isinstance(value, QPointF) else QPointF(float(value[0]), float(value[1]))
+            item = CornerMarkerItem(name, point)
+            self._scene.addItem(item)
+            self._corner_items[name] = item
+        self._update_corner_marker_sizes()
+
+    def corner_points(self) -> dict[str, QPointF]:
+        return {name: QPointF(item.point) for name, item in self._corner_items.items()}
+
+    def _update_corner_marker_sizes(self) -> None:
+        radius = CORNER_MARKER_SCREEN_RADIUS / max(self._current_scale, 0.0001)
+        for item in self._corner_items.values():
+            item.set_scene_radius(radius)
+        self.viewport().update()
+
     # ---- boxes --------------------------------------------------------
-    def add_box_item(self, rect: QRectF, class_name: str | None, confirmed: bool, select: bool = False) -> BoxItem:
+    def add_box_item(
+        self,
+        rect: QRectF,
+        class_name: str | None,
+        confirmed: bool,
+        select: bool = False,
+        emit_modified: bool = True,
+    ) -> BoxItem:
         item = BoxItem(QRectF(rect), class_name, confirmed, self.image_bounds())
         item.on_drag_begin = lambda: self.on_drag_begin() if self.on_drag_begin else None
         item.on_drag_end = self._handle_item_drag_end
@@ -364,6 +451,8 @@ class ImageCanvas(QGraphicsView):
         if select:
             self._scene.clearSelection()
             item.setSelected(True)
+        if emit_modified:
+            self.sceneModified.emit()
         return item
 
     def _handle_item_drag_end(self, changed: bool) -> None:
@@ -417,6 +506,7 @@ class ImageCanvas(QGraphicsView):
         self.resetTransform()
         self.scale(scale, scale)
         self._scene.handle_scene_size = HANDLE_SCREEN_SIZE / scale
+        self._update_corner_marker_sizes()
 
     def zoom_by(self, factor: float) -> None:
         self.set_zoom(self._current_scale * factor)
@@ -427,6 +517,7 @@ class ImageCanvas(QGraphicsView):
         self.fitInView(self._pixmap_item, Qt.AspectRatioMode.KeepAspectRatio)
         self._current_scale = self.transform().m11()
         self._scene.handle_scene_size = HANDLE_SCREEN_SIZE / self._current_scale
+        self._update_corner_marker_sizes()
 
     def fit_to_width(self) -> None:
         if self._pixmap_item is None or self._image_size[0] == 0:
@@ -455,6 +546,7 @@ class ImageCanvas(QGraphicsView):
         self._scene.addItem(self._temp_rect_item)
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
+        self._last_scene_pos = self.mapToScene(event.position().toPoint())
         if event.button() == Qt.MouseButton.LeftButton and self._mode in (
             CanvasMode.DRAW_BOX,
             CanvasMode.MEASURE_RADIUS,
@@ -467,6 +559,7 @@ class ImageCanvas(QGraphicsView):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        self._last_scene_pos = self.mapToScene(event.position().toPoint())
         if self._drawing and self._temp_rect_item is not None:
             cur = self.mapToScene(event.pos())
             rect = QRectF(self._draw_start_scene, cur).normalized()
@@ -477,6 +570,7 @@ class ImageCanvas(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        self._last_scene_pos = self.mapToScene(event.position().toPoint())
         if self._drawing and event.button() == Qt.MouseButton.LeftButton:
             rect = self._temp_rect_item.rect()
             self._scene.removeItem(self._temp_rect_item)
@@ -495,6 +589,23 @@ class ImageCanvas(QGraphicsView):
         super().mouseReleaseEvent(event)
 
     def keyPressEvent(self, event) -> None:  # noqa: N802
+        corner_by_key = {
+            Qt.Key.Key_1: "top_left",
+            Qt.Key.Key_2: "top_right",
+            Qt.Key.Key_3: "bottom_right",
+            Qt.Key.Key_4: "bottom_left",
+        }
+        corner_name = corner_by_key.get(event.key())
+        if corner_name is not None:
+            pos = self._last_scene_pos
+            if pos is not None and self.image_bounds().contains(pos):
+                self.cornerRequested.emit(corner_name, QPointF(pos))
+            event.accept()
+            return
+        if event.key() == Qt.Key.Key_0:
+            self.clearCornersRequested.emit()
+            event.accept()
+            return
         if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
             if self.selected_box() is not None:
                 self.deleteRequested.emit()

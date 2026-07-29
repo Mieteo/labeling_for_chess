@@ -415,3 +415,372 @@ tiếp, agent xây dựng có thể triển khai thẳng theo tài liệu này:
   ảnh/lô ảnh.
 - **Danh sách 15 lớp** ở mục 1.2: xác nhận là ràng buộc cứng, không thêm
   lớp nào khác (không tách quân lật/nghiêng, không thêm lớp viền bàn cờ...).
+
+## 10. Cập nhật bắt buộc — metadata gold-set, 4 góc bàn cờ, FEN người xác minh và điều kiện chụp
+
+> **Quyết định mới:** mục này thay thế phần “không cần người dùng đánh dấu 4
+> góc” ở mục 0 và phần “không cần tự động phát hiện 4 góc” ở mục 7, nhưng chỉ
+> theo nghĩa **tool phải cho phép người gán nhãn ghi ground truth bằng tay**.
+> Tool không phải tự suy luận góc. Ground truth này là cần thiết để benchmark
+> độc lập thuật toán OpenCV/Hough, phép rectification và full-board FEN của
+> scanner Phase 5.
+
+### 10.1. Quyết định định dạng: không gộp metadata vào `<stem>.txt`
+
+Tool mới hoàn toàn có thể tự đọc một file `.txt` custom, nhưng **không được
+gộp metadata vào file YOLO `<stem>.txt`**. File này phải tiếp tục chỉ chứa các
+dòng YOLO năm trường:
+
+```text
+<class_id> <x_center> <y_center> <width> <height>
+```
+
+Lý do là dữ liệu cũ từ labelImg, tool hiện tại và các script downstream đều
+đọc nó như YOLO thuần. Thêm JSON, header, comment hoặc một cột thứ sáu có thể
+làm hỏng parser, bị ghi đè khi mở/lưu lại, hoặc tệ hơn là gây silent corruption.
+Tính tương thích ngược ở mục 1 vẫn là ràng buộc cứng.
+
+Mỗi ảnh được phép có thêm một **sidecar JSON** cùng thư mục:
+
+```text
+0105.jpg          # ảnh gốc, không bị tool sửa
+0105.txt          # YOLO bbox thuần cho 15 lớp hiện có
+0105.meta.json    # metadata board-level mô tả trong mục này
+```
+
+Quy tắc bắt buộc:
+
+- Tên sidecar phải đúng `<stem>.meta.json`, với `<stem>` đúng tên ảnh, phân
+  biệt ảnh theo quy tắc hệ điều hành nhưng không phụ thuộc phần mở rộng ảnh.
+- Tool vẫn phải mở/lưu bình thường mọi ảnh cũ chỉ có `.txt`; sidecar là tùy
+  chọn cho đến khi người dùng lưu metadata lần đầu.
+- Danh sách ảnh phải bỏ qua `.meta.json`, `.labeling_session.json`,
+  `classes.txt` và mọi file không phải ảnh.
+- `.txt` là source of truth cho YOLO bbox; `.meta.json` là source of truth cho
+  góc, FEN, điều kiện ảnh và trạng thái review. Không nhân bản bbox sang JSON.
+- JSON dùng UTF-8, JSON chuẩn không có comment, field name tiếng Anh ổn định,
+  không ghi đường dẫn tuyệt đối của máy vào file.
+- Khi Save, ghi ra file tạm cùng thư mục rồi rename/replace nguyên tử. Không
+  được để một lần crash tạo JSON nửa chừng hoặc phá file `.txt` cũ.
+- Nếu JSON lỗi cú pháp/schema, tool phải cảnh báo rõ, mở ảnh/bbox ở chế độ an
+  toàn và **không tự ghi đè** metadata lỗi cho tới khi người dùng chọn sửa/lưu.
+
+### 10.2. Schema `meta.json` phiên bản 1
+
+Đây là schema chuẩn phải được tool đọc/ghi. Field chưa biết dùng `null` hoặc
+`"unknown"`, không suy đoán để làm đẹp dữ liệu.
+
+```json
+{
+  "schema_version": 1,
+  "image": {
+    "filename": "0105.jpg",
+    "width_px": 1920,
+    "height_px": 1080
+  },
+  "board": {
+    "corners_px": {
+      "top_left": { "x": 233.0, "y": 91.5 },
+      "top_right": { "x": 1680.5, "y": 110.0 },
+      "bottom_right": { "x": 1748.0, "y": 997.5 },
+      "bottom_left": { "x": 176.0, "y": 971.0 }
+    },
+    "corners_status": "human_verified",
+    "image_orientation": "red_at_bottom",
+    "position_complete": true,
+    "board_fen": "rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR",
+    "side_to_move": null,
+    "full_fen": null,
+    "fen_status": "human_verified"
+  },
+  "capture": {
+    "lighting": "even",
+    "shadow": "mild",
+    "glare": "none",
+    "perspective": "mild",
+    "board_material": "wood",
+    "board_fill": "large",
+    "distance": "medium",
+    "blur": "none",
+    "occlusion": "none",
+    "occlusion_severity": "none",
+    "environment": "indoor",
+    "device_model": "Redmi Note 11",
+    "capture_group": null
+  },
+  "review": {
+    "status": "self_checked",
+    "fen_verified": true,
+    "corners_verified": true,
+    "exclude_from_gold": false,
+    "exclusion_reason": null,
+    "notes": ""
+  }
+}
+```
+
+Quy ước dữ liệu:
+
+- `image.filename`, `image.width_px`, `image.height_px` là fingerprint tối
+  thiểu để tool phát hiện sidecar bị ghép nhầm sang ảnh khác hoặc ảnh đã bị
+  resize. Không lưu đường dẫn tuyệt đối.
+- `corners_px` lưu tọa độ pixel của **ảnh gốc**, với `x` tăng sang phải và `y`
+  tăng xuống dưới. Đây là hệ tọa độ canonical duy nhất vì benchmark geometry
+  cần đo trực tiếp sai số pixel/reprojection error. Không lưu đồng thời pixel
+  và normalized trong JSON để tránh hai bản bị lệch; script export có thể suy
+  ra `x / image.width_px`, `y / image.height_px` khi thực sự cần normalized.
+- Bốn điểm là **bốn giao điểm lưới ngoài cùng của bàn 9×10**, không phải mép
+  gỗ/nhựa, khung trang trí hoặc vùng ảnh bao quanh bàn.
+- Thứ tự không đổi: `top_left`, `top_right`, `bottom_right`, `bottom_left`,
+  theo chiều kim đồng hồ trong ảnh gốc.
+- `corners_status` là một trong: `unmarked`, `partial`, `auto_suggested`,
+  `human_marked`, `human_verified`, `not_applicable`. Phiên bản đầu không cần
+  tự đề xuất góc, nhưng schema giữ `auto_suggested` cho tương lai.
+- `image_orientation` là hướng của bàn trong ảnh: `red_at_bottom`,
+  `red_at_top`, `red_at_left`, `red_at_right`, `unknown`. Nó mô tả ảnh, không
+  phải trạng thái lượt đi.
+- `board_fen` là **piece-placement field** của Xiangqi FEN, từ rank trên ảnh
+  logic xuống rank dưới, dùng bộ ký hiệu `K/A/B/R/C/N/P` cho Đỏ và chữ thường
+  cho Đen. Đây là field chính để đo exact-match vị trí bàn cờ.
+- `side_to_move` chỉ nhận `red`, `black` hoặc `null`. Ảnh tĩnh thường không
+  cho biết lượt đi, vì vậy mặc định phải là `null`, không được tự đặt Đỏ.
+- `full_fen` chỉ được điền khi người dùng thực sự biết lượt đi; khi có giá trị,
+  nó phải khớp `board_fen` và `side_to_move`. Nếu chưa biết lượt đi, giữ
+  `full_fen: null`.
+- `fen_status` nhận: `not_started`, `human_marked`, `human_verified`,
+  `not_applicable`; chỉ trạng thái `human_verified` mới được coi là ground
+  truth FEN cho benchmark.
+- `position_complete: false` nếu bàn bị cắt mất, quân che quá nhiều hoặc người
+  gán nhãn không thể xác minh chính xác toàn thế cờ. Ảnh đó có thể vẫn dùng để
+  train detector/classifier nhưng không được dùng tính full-board FEN
+  exact-match.
+- `review.status` nhận: `unreviewed`, `annotated`, `self_checked`,
+  `gold_verified`, `needs_review`. Chỉ `gold_verified` mới được đưa vào gold
+  holdout chính thức.
+- Không lưu định danh cá nhân, GPS, serial thiết bị hoặc EXIF thô. `device_model`
+  chỉ là tên model/family thiết bị phục vụ phân tích lỗi theo thiết bị.
+
+### 10.3. Nhập và hiển thị 4 góc bằng bàn phím
+
+Tool phải thêm chế độ **Board corners** trên canvas ảnh gốc. Đây là thao tác
+nhanh, không thay thế công cụ vẽ bbox.
+
+#### Phím tắt và hành vi
+
+Khi canvas ảnh đang có focus, không có text field/dropdown/popup đang nhận
+phím:
+
+| Phím | Hành vi |
+|---|---|
+| `1` | Lấy vị trí chuột hiện tại làm `top_left` |
+| `2` | Lấy vị trí chuột hiện tại làm `top_right` |
+| `3` | Lấy vị trí chuột hiện tại làm `bottom_right` |
+| `4` | Lấy vị trí chuột hiện tại làm `bottom_left` |
+| `0` | Xóa cả bốn góc sau hộp xác nhận ngắn |
+
+- Mỗi phím chỉ thay thế đúng góc tương ứng; cho phép bấm lại để chỉnh từng góc
+  mà không bắt buộc nhập lại bốn góc.
+- Hành động đặt/xóa/thay thế góc phải đi vào undo/redo stack riêng của ảnh.
+- Sau thao tác, status bar báo tên góc và tọa độ pixel; ví dụ
+  `Đã đặt top_left: (128, 91)`.
+- Nếu canvas không có focus hoặc người dùng đang nhập FEN/chọn dropdown, các
+  phím `1`–`4` phải đi theo control đang focus, không được vô tình ghi góc.
+
+#### Overlay trực quan
+
+- Mỗi góc đã đặt được vẽ thành **một hình tròn fill nhỏ bán kính 3 px màn
+  hình** quanh đúng điểm. Bán kính hiển thị giữ 2–3 px khi zoom để không che
+  lưới, nhưng tâm phải bám chính xác vào tọa độ ảnh khi pan/zoom/fit.
+- Dùng bốn màu cố định dễ phân biệt: top-left xanh lá, top-right xanh dương,
+  bottom-right cam, bottom-left tím. Tooltip hoặc panel liệt kê tên/giá trị;
+  không cần chữ lớn che ảnh.
+- Khi rê chuột lên marker, highlight nhẹ marker tương ứng và hiển thị tên góc.
+- Marker phải nằm trên bbox overlay nhưng không được cản thao tác vẽ/chọn box.
+
+#### Kiểm tra trước khi đánh dấu `human_verified`
+
+Tool phải kiểm tra và hiển thị lỗi/cảnh báo, không âm thầm nhận dữ liệu xấu:
+
+- đủ bốn điểm, trong biên ảnh;
+- không trùng nhau;
+- polygon lồi, không tự cắt kiểu bow-tie;
+- thứ tự theo chiều kim đồng hồ như schema;
+- diện tích tối thiểu hợp lý, mặc định ít nhất 1% diện tích ảnh.
+
+`human_marked` có thể lưu khi còn cảnh báo để người dùng quay lại xử lý;
+`human_verified` chỉ có thể chọn khi các kiểm tra hình học trên pass. Kiểm tra
+này không chứng minh góc đúng với bàn thật, nhưng chặn lỗi nhập liệu rõ ràng.
+
+### 10.4. Board editor số hóa và nguồn FEN do con người xác minh
+
+#### Bố cục
+
+- Màn hình chính vẫn đặt ảnh bàn cờ thật làm vùng làm việc trung tâm/trái.
+- Thêm một **dock/panel ở bên phải** tên `Bàn cờ số hóa & FEN`, có thể cuộn khi
+  màn hình thấp nhưng không được che ảnh gốc.
+- Panel hiển thị bàn Xiangqi 9 cột × 10 hàng. Mặc định hiển thị Đen ở phía trên,
+  Đỏ ở phía dưới; có nút `Lật hiển thị` chỉ đổi hướng nhìn, không đổi state hay
+  FEN logic.
+- Khi mở ảnh chưa có metadata, board hiển thị thế xuất phát đủ 32 quân như một
+  scaffold để người dùng chỉnh nhanh. Tuy nhiên `board_fen` và `fen_status`
+  phải vẫn là `null`/`not_started` cho đến khi người dùng chủ động lưu/xác nhận
+  board; tool tuyệt đối không được tự ghi FEN thế xuất phát cho ảnh mới.
+- Khi metadata đã có `board_fen`, khởi tạo từ chính FEN đó; không reset lại thế
+  xuất phát trừ khi người dùng chủ động chọn.
+
+#### Tương tác bắt buộc
+
+- Người dùng drag một quân từ giao điểm nguồn sang giao điểm đích. Quân phải
+  snap đúng một trong 90 giao điểm.
+- Nếu đích có quân, thao tác là bắt quân: quân đích bị xóa, quân nguồn chuyển
+  tới đích.
+- Click quân rồi click giao điểm đích là phương án tương đương cho touchpad.
+- Chọn quân và bấm `Delete`/`Backspace` xóa quân; cần thiết để mô tả thế cờ có
+  quân đã bị bắt.
+- Có palette 14 loại quân (`red_*`, `black_*`, không có `hand`) để thêm quân:
+  chọn loại trong palette rồi click một giao điểm trống. Điều này phục vụ thế
+  cờ dựng tay/nhập sai trước đó; không giới hạn theo lịch sử nước đi.
+- Có nút `Thế xuất phát`, `Bàn trống`, `Undo`, `Redo`, `Lật hiển thị` và `Sao
+  chép board FEN`. Các nút reset phải hỏi xác nhận nếu state đã thay đổi.
+- Board editor là công cụ annotation, **không bắt buộc luật đi hợp lệ từng
+  nước**. Người dùng được phép di chuyển/thêm/xóa trực tiếp để khớp ảnh.
+
+#### FEN, validation và lưu
+
+- `board_fen` được sinh lại tức thời từ state board sau mọi chỉnh sửa; không
+  phải trường người dùng gõ tự do trong luồng chính.
+- UI hiển thị field read-only, nút Copy, và trạng thái validation.
+- Có thể bổ sung action phụ `Dán board FEN` sau này, nhưng phải validate và
+  cập nhật toàn bộ board trước khi áp dụng; không phải yêu cầu tối thiểu.
+- Áp dụng Xiangqi board validator: số tướng, cung tướng/sĩ, tượng qua sông,
+  hai tướng đối mặt, số quân tối đa. Hiển thị từng lỗi dễ hiểu.
+- Validator lỗi **không được tự sửa board**. Người dùng có thể lưu state
+  `position_complete: false`/`needs_review` để không chặn công việc, nhưng
+  không được đánh dấu `fen_verified: true` hay `gold_verified` khi còn lỗi.
+- Bàn hợp lệ không tự động chứng minh FEN đúng với ảnh. Người dùng phải đối
+  chiếu ảnh–board rồi mới bật `fen_verified`.
+- Khi người dùng biết lượt đi, có dropdown `side_to_move`: `Không biết`,
+  `Đỏ`, `Đen`. Chỉ khi chọn Đỏ/Đen mới sinh `full_fen`; mặc định là `null`.
+
+### 10.5. Dropdown metadata điều kiện ảnh — tối ưu tốc độ gán nhãn
+
+Thêm panel `Điều kiện chụp` dưới hoặc cạnh board editor. Mọi field là
+dropdown/combobox có keyboard navigation; không yêu cầu gõ tự do trừ
+`device_model` và `notes`.
+
+| Field | Giá trị bắt buộc |
+|---|---|
+| `lighting` | `unknown`, `very_dark`, `dim`, `even`, `bright`, `mixed` |
+| `shadow` | `unknown`, `none`, `mild`, `strong` |
+| `glare` | `unknown`, `none`, `mild`, `strong` |
+| `perspective` | `unknown`, `frontal`, `mild`, `strong`, `extreme` |
+| `board_material` | `unknown`, `wood`, `plastic`, `paper`, `stone`, `other` |
+| `board_fill` | `unknown`, `tiny`, `small`, `medium`, `large`, `very_large` |
+| `distance` | `unknown`, `near`, `medium`, `far` |
+| `blur` | `unknown`, `none`, `mild`, `strong` |
+| `occlusion` | `unknown`, `none`, `hand`, `piece`, `object`, `multiple` |
+| `occlusion_severity` | `unknown`, `none`, `mild`, `strong` |
+| `environment` | `unknown`, `indoor`, `outdoor`, `mixed` |
+| `device_model` | combobox editable, `unknown` mặc định, nhớ các giá trị gần đây |
+| `capture_group` | combobox editable, `null` mặc định; dùng để nhóm ảnh cùng phiên/bối cảnh |
+
+Yêu cầu UX:
+
+- Mặc định mọi tag là `unknown`; không tự điền “normal” hoặc “none”.
+- `occlusion = none` tự đề xuất `occlusion_severity = none`; nếu đổi
+  `occlusion` sang giá trị khác, severity trở lại `unknown` để người dùng xác
+  nhận.
+- `device_model` và `capture_group` phải có danh sách recent values từ
+  `.labeling_session.json`, cho phép chọn bằng vài phím và không lưu ID cá nhân.
+- Có nút `Áp dụng điều kiện hiện tại cho ảnh tiếp theo` và tùy chọn áp dụng cho
+  dải ảnh người dùng chọn. Hành động batch phải hiện số ảnh bị đổi và có xác
+  nhận; không được ghi đè field đã khác `unknown` nếu người dùng không chọn
+  `Ghi đè giá trị đã có`.
+- Panel phải hiện một badge `Metadata chưa đủ` khi chưa đủ góc/FEN/tags để
+  người dùng biết ảnh này chưa thể là gold sample, nhưng vẫn cho phép lưu YOLO
+  bbox độc lập.
+
+### 10.6. Luồng thao tác đề xuất cho một ảnh
+
+1. Mở ảnh; tool đọc `.txt` YOLO và `.meta.json` nếu có.
+2. Kiểm tra/sửa bbox quân cờ như workflow hiện có.
+3. Đặt bốn góc bằng `1` → `2` → `3` → `4`; kiểm tra overlay trên lưới thật.
+4. Điều chỉnh board số hóa cho khớp ảnh thật, bao gồm các quân đã bị bắt.
+5. Kiểm tra board FEN, chọn `position_complete`, và chỉ xác minh FEN sau khi
+   đối chiếu ảnh–board.
+6. Chọn nhanh điều kiện chụp bằng dropdown; dùng `unknown` nếu không chắc.
+7. Chọn `review.status`, lưu. Tool ghi `.txt` khi bbox thay đổi và ghi
+   `.meta.json` khi metadata thay đổi; không rewrite file không thay đổi.
+
+### 10.7. Tương thích, migration và phạm vi downstream
+
+- Các ảnh cũ đã gán bằng labelImg không có `.meta.json` phải mở bình thường.
+  Tool hiển thị metadata ở trạng thái chưa hoàn thành, không tự sinh hay tự
+  coi góc/FEN từ thuật toán hiện tại là ground truth.
+- Với 74 ảnh hiện có, ưu tiên bổ sung bốn góc, orientation và FEN do người
+  kiểm tra trước; đây là gold-set ban đầu có giá trị hơn việc tăng nhanh số
+  lượng ảnh không có ground truth board-level.
+- `tool/unify_scanner_labels.py` hiện chỉ đọc YOLO và sẽ không tự đọc sidecar.
+  Đây là hành vi đúng ở giai đoạn này: sidecar không được làm thay đổi train
+  pipeline cũ. Một tool benchmark/ingest metadata riêng sẽ join `<stem>.txt`
+  với `<stem>.meta.json` ở phase tiếp theo.
+- Khi metadata thiếu, sai schema hoặc không khớp stem ảnh, tool phải báo trong
+  sidebar/log; không bỏ qua im lặng khi người dùng đang cố tạo gold sample.
+
+### 10.8. Acceptance criteria bổ sung
+
+1. **YOLO bất biến:** mở/lưu metadata cho ảnh chỉ có `.txt` không được chèn
+   một byte metadata nào vào `.txt`; `unify_scanner_labels.py` vẫn đọc ảnh đó
+   thành công như trước.
+2. **Round-trip metadata:** lưu rồi đóng/mở lại ảnh phải khôi phục chính xác 4
+   góc, FEN board, side-to-move, tags, review status và notes.
+3. **Canvas mapping:** ở các mức zoom fit, 100%, 300% và sau pan, bấm `1`–`4`
+   phải lưu cùng tọa độ ảnh trong sai số tối đa 1 pixel ảnh; marker phải bám
+   đúng điểm khi đổi zoom.
+4. **Corner validation:** 4 điểm hợp lệ được chấp nhận; thiếu điểm, trùng điểm,
+   bow-tie và polygon quá nhỏ bị cảnh báo; không thể gắn `human_verified` khi
+   kiểm tra hình học fail.
+5. **Board editor/FEN:** thế xuất phát sinh đúng `board_fen` chuẩn; drag, bắt,
+   thêm, xóa, undo/redo và reset cập nhật FEN đúng; lật hiển thị không đổi FEN
+   logic; side-to-move `null` không sinh `full_fen`.
+6. **Validation/review:** board bất hợp lệ có thông báo cụ thể và không thể
+   được đánh dấu `fen_verified` hoặc `gold_verified`; vẫn có thể lưu
+   `needs_review` để không mất công annotation.
+7. **Tag UX:** tất cả dropdown có đúng taxonomy, `unknown` là default, recent
+   device/capture group hoạt động, và batch apply không vô tình ghi đè metadata
+   có ý nghĩa.
+8. **Không phá resume:** `.labeling_session.json` chỉ giữ preference/session;
+   khi copy nguyên thư mục ảnh sang máy khác, `.txt` và `.meta.json` đi cùng,
+   tool vẫn nhận diện đúng tiến độ và metadata.
+
+### 10.9. Không triển khai trong yêu cầu này
+
+Tài liệu này chỉ bổ sung yêu cầu sản phẩm/UX/schema cho tool. Không yêu cầu ở
+lần này sửa scanner app, sửa `unify_scanner_labels.py`, train lại model, hoặc
+tự động suy luận góc/FEN. Những bước downstream chỉ được làm sau khi sidecar
+schema và dữ liệu gold-set đã được tạo, review và benchmark riêng.
+
+### 10.10. Trạng thái triển khai hiện tại (tool custom)
+
+Các yêu cầu của mục 10 đã được triển khai trong tool tại thời điểm cập nhật tài
+liệu này:
+
+- `chess_labeler/metadata.py`: schema sidecar v1, kiểm tra fingerprint ảnh,
+  kiểm tra hình học bốn góc, đọc an toàn và ghi nguyên tử `<stem>.meta.json`.
+  Module này không đọc/ghi `.txt` YOLO.
+- `chess_labeler/canvas.py`: hotkey `1`–`4`/`0`, marker overlay bám tọa độ pixel
+  ảnh, tooltip, và undo/redo góc riêng ở cửa sổ chính.
+- `chess_labeler/board_editor.py`: board Xiangqi 9×10, FEN board, drag/click,
+  bắt quân, palette, delete, lật hiển thị, undo/redo, copy FEN và validator
+  cấu trúc.
+- `chess_labeler/metadata_panel.py`: taxonomy dropdown, orientation/review,
+  side-to-move, recent device/capture group và batch-apply có xác nhận.
+- `chess_labeler/main_window.py`: chỉ ghi `.txt` khi bbox thay đổi, chỉ ghi
+  `.meta.json` khi metadata thay đổi; metadata lỗi không bị ghi đè tự động.
+
+Lệnh kiểm thử đầy đủ:
+
+```powershell
+python -m compileall -q chess_labeler
+pytest -q
+```
