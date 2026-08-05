@@ -260,6 +260,21 @@ class MetadataPanel(QWidget):
                 self,
             )
 
+        self._capture_group = QComboBox(self)
+        self._capture_group.setObjectName("capture_capture_group")
+        self._capture_group.setEditable(True)
+        self._capture_group.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self._capture_group.lineEdit().setPlaceholderText("Để trống nếu chưa biết")
+        self._capture_group.addItem("Chưa gán", "")
+        self._add_compact_field(
+            capture_grid,
+            (len(capture_fields) + 1) // 2,
+            0,
+            "Nhóm chụp:",
+            self._capture_group,
+            self,
+        )
+
         template_row = QHBoxLayout()
         template_row.setContentsMargins(0, 0, 0, 0)
         next_button = QPushButton("Áp dụng cho ảnh tiếp", self)
@@ -281,6 +296,8 @@ class MetadataPanel(QWidget):
         for combo in [self._orientation, *self._capture_controls.values()]:
             combo.currentIndexChanged.connect(self._emit_changed)
         self._capture_controls["occlusion"].currentIndexChanged.connect(self._sync_occlusion_severity)
+        self._capture_group.currentTextChanged.connect(self._emit_changed)
+        self._capture_group.lineEdit().editingFinished.connect(self._emit_changed)
         self._notes.editingFinished.connect(self._emit_changed)
 
         self.set_values({})
@@ -324,6 +341,29 @@ class MetadataPanel(QWidget):
         value = combo.currentData()
         return value if isinstance(value, str) and value else fallback
 
+    def _capture_group_value(self) -> str | None:
+        if (
+            self._capture_group.currentIndex() == 0
+            and self._capture_group.currentData() == ""
+            and self._capture_group.currentText() == self._capture_group.itemText(0)
+        ):
+            return None
+        value = self._capture_group.currentText().strip()
+        return value or None
+
+    def _set_capture_group(self, value: object) -> None:
+        text = value.strip() if isinstance(value, str) else ""
+        self._capture_group.blockSignals(True)
+        try:
+            if text and self._capture_group.findData(text) < 0:
+                self._capture_group.addItem(text, text)
+            if text:
+                self._capture_group.setCurrentText(text)
+            else:
+                self._capture_group.setCurrentIndex(0)
+        finally:
+            self._capture_group.blockSignals(False)
+
     def set_values(self, values: Mapping[str, Any] | None) -> None:
         """Load schema-shaped values without emitting dirty notifications."""
 
@@ -346,6 +386,7 @@ class MetadataPanel(QWidget):
             self._set_combo_data(self._orientation, board.get("image_orientation"))
             for field, combo in self._capture_controls.items():
                 self._set_combo_data(combo, capture.get(field))
+            self._set_capture_group(capture.get("capture_group"))
             self._notes.setText(str(review.get("notes") or ""))
             self._set_presence(
                 self._corner_presence,
@@ -375,6 +416,7 @@ class MetadataPanel(QWidget):
             field: self._combo_value(combo)
             for field, combo in self._capture_controls.items()
         }
+        capture["capture_group"] = self._capture_group_value()
         return {
             "board": {"image_orientation": self._combo_value(self._orientation)},
             "capture": capture,
@@ -389,15 +431,32 @@ class MetadataPanel(QWidget):
         try:
             for field, combo in self._capture_controls.items():
                 self._set_combo_data(combo, capture.get(field))
+            self._set_capture_group(capture.get("capture_group"))
         finally:
             self._loading = False
 
-    def set_recent_values(self, _devices: list[str], _capture_groups: list[str]) -> None:
-        """Compatibility no-op.
+    def set_recent_values(self, _devices: list[str], capture_groups: list[str]) -> None:
+        """Populate the editable capture-group combobox from session MRU values."""
 
-        Device model and capture group are no longer collected by the UI, but
-        callers from older sessions may still invoke this method.
-        """
+        current = self._capture_group_value()
+        self._capture_group.blockSignals(True)
+        try:
+            self._capture_group.clear()
+            self._capture_group.addItem("Chưa gán", "")
+            seen: set[str] = set()
+            for value in capture_groups:
+                text = value.strip()
+                if text and text not in seen:
+                    self._capture_group.addItem(text, text)
+                    seen.add(text)
+            if current:
+                if current not in seen:
+                    self._capture_group.addItem(current, current)
+                self._capture_group.setCurrentText(current)
+            else:
+                self._capture_group.setCurrentIndex(0)
+        finally:
+            self._capture_group.blockSignals(False)
 
     def set_validation(self, corner_errors: list[str], fen_errors: list[str]) -> None:
         self._corner_errors = list(corner_errors)

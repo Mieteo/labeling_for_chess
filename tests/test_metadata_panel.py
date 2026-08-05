@@ -24,6 +24,14 @@ def test_capture_dropdowns_show_vietnamese_and_persist_stable_schema_codes():
         assert orientation.currentData() == "unknown"
         assert orientation.currentText() == "Chưa xác định"
         assert panel.values()["board"] == {"image_orientation": "unknown"}
+        assert panel._capture_group.isEditable()
+        assert panel._capture_group.currentData() == ""
+        assert panel.values()["capture"]["capture_group"] is None
+
+        panel.set_recent_values([], ["session-002", "session-001"])
+        assert panel._capture_group.itemData(1) == "session-002"
+        panel._capture_group.setCurrentText("session-001")
+        assert panel.values()["capture"]["capture_group"] == "session-001"
     finally:
         panel.close()
 
@@ -53,5 +61,9 @@ def test_metadata_panel_is_one_no_scroll_form_with_value_based_statuses():
         )
         assert panel._corner_presence.text() == "Đã đánh dấu (4/4)"
         assert panel._fen_presence.text() == "Đã có FEN"
+
+        panel.set_values({"capture": {"capture_group": "session-017"}})
+        assert panel._capture_group.currentText() == "session-017"
+        assert panel.values()["capture"]["capture_group"] == "session-017"
     finally:
         panel.close()

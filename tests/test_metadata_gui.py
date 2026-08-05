@@ -67,6 +67,7 @@ def test_metadata_only_save_preserves_yolo_bytes_and_round_trips_simplified_fiel
     panel._capture_controls["board_material"].setCurrentIndex(
         panel._capture_controls["board_material"].findData("wood")
     )
+    panel._capture_group.setCurrentText("session-001")
     panel._notes.setText("Ảnh test")
     main_window._on_metadata_panel_changed()
 
@@ -87,6 +88,7 @@ def test_metadata_only_save_preserves_yolo_bytes_and_round_trips_simplified_fiel
     assert saved.review.corners_verified is True
     assert saved.review.fen_verified is True
     assert saved.capture.lighting == "even"
+    assert saved.capture.capture_group == "session-001"
     assert saved.capture.device_model == "unknown"
     assert saved.review.notes == "Ảnh test"
 
@@ -96,6 +98,7 @@ def test_metadata_only_save_preserves_yolo_bytes_and_round_trips_simplified_fiel
     assert main_window._canvas.corner_points()["top_left"] == QPointF(50, 40)
     assert main_window._board_editor.board_fen == STARTING_BOARD_FEN
     assert main_window._metadata_panel._capture_controls["lighting"].currentData() == "even"
+    assert main_window._metadata_panel._capture_group.currentText() == "session-001"
 
 
 def test_confirm_and_clear_fen_turn_the_scaffold_into_an_explicit_value(main_window, labelimg_dataset, monkeypatch):

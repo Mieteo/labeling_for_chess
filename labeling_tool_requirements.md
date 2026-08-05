@@ -826,9 +826,10 @@ và loại khỏi gold set.
 - Mọi dropdown điều kiện chụp hiển thị tiếng Việt dễ hiểu. JSON vẫn lưu các mã
   tiếng Anh ổn định (`even`, `indoor`, …) của schema v1 để không làm hỏng các
   script downstream.
-- Không còn thu thập `device_model` hoặc `capture_group` trong UI. Giá trị v1
-  cũ được giữ khi mở/lưu sidecar để tương thích ngược; mẫu mới dùng mặc định
-  `unknown` và `null`.
+- `capture_group` được thu thập trong UI bằng combobox cho phép nhập/chọn giá trị
+  recent; giá trị được lưu trong sidecar v1 và dùng để chia session holdout.
+  Để trống khi không biết. `device_model` v1 cũ vẫn được giữ khi mở/lưu sidecar
+  để tương thích ngược.
 - Không còn UI `review`, `Loại khỏi gold set` hay lý do loại. Các trường review
   v1 cũ được giữ để sidecar cũ vẫn mở được; trạng thái kỹ thuật về góc/FEN được
   tool tự suy diễn nội bộ từ dữ liệu và validation, không yêu cầu annotator chọn.
