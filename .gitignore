@@ -39,3 +39,6 @@ htmlcov/
 
 # Project specific session state
 .labeling_session.json
+
+# Image data folders
+/images/*/
