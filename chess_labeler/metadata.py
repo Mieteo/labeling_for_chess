@@ -300,13 +300,22 @@ def new_metadata(
     image_width_px: int,
     image_height_px: int,
 ) -> ImageMetadata:
-    """Build the safe, explicitly-unannotated metadata state for an image."""
+    """Build the safe, explicitly-unannotated metadata state for an image.
+
+    ``capture_group`` defaults to ``M<stem>`` so every image starts as its
+    own independent capture group; batch-apply (with "Ghi đè" checked) is
+    the intended way to merge several images into one shared group.
+    """
 
     width, height = _validate_image_size((image_width_px, image_height_px))
     image_name = Path(image_path).name
     if not image_name:
         raise MetadataSchemaError("image path must include a filename")
-    return ImageMetadata(image=ImageFingerprint(image_name, width, height))
+    stem = Path(image_path).stem
+    return ImageMetadata(
+        image=ImageFingerprint(image_name, width, height),
+        capture=CaptureMetadata(capture_group=f"M{stem}"),
+    )
 
 
 def metadata_to_dict(metadata: ImageMetadata) -> dict[str, object]:

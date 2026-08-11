@@ -56,6 +56,13 @@ def test_new_metadata_has_safe_unannotated_defaults(tmp_path: Path):
     assert result.review.status == "unreviewed"
 
 
+def test_new_metadata_defaults_capture_group_to_own_image(tmp_path: Path):
+    image_path = tmp_path / "0007.jpg"
+    result = metadata.new_metadata(image_path, *IMAGE_SIZE)
+
+    assert result.capture.capture_group == "M0007"
+
+
 def test_metadata_path_uses_stem_not_image_extension(tmp_path: Path):
     assert metadata.metadata_path_for_image(tmp_path / "board.photo.JPEG").name == "board.photo.meta.json"
 
