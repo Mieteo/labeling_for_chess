@@ -68,6 +68,10 @@ def test_metadata_only_save_preserves_yolo_bytes_and_round_trips_simplified_fiel
         panel._capture_controls["board_material"].findData("wood")
     )
     panel._capture_group.setCurrentText("session-001")
+    panel._content_cohort.setCurrentIndex(panel._content_cohort.findData("screen_photo"))
+    panel._style_or_app.setText("Xiangqi app A")
+    panel._capture_session.setText("pixel-9")
+    panel._position_id.setText("fen-001")
     panel._notes.setText("Ảnh test")
     main_window._on_metadata_panel_changed()
 
@@ -89,6 +93,10 @@ def test_metadata_only_save_preserves_yolo_bytes_and_round_trips_simplified_fiel
     assert saved.review.fen_verified is True
     assert saved.capture.lighting == "even"
     assert saved.capture.capture_group == "session-001"
+    assert saved.capture.content_cohort == "screen_photo"
+    assert saved.capture.style_or_app == "Xiangqi app A"
+    assert saved.capture.capture_session == "pixel-9"
+    assert saved.capture.position_id == "fen-001"
     assert saved.capture.device_model == "unknown"
     assert saved.review.notes == "Ảnh test"
 
@@ -99,6 +107,7 @@ def test_metadata_only_save_preserves_yolo_bytes_and_round_trips_simplified_fiel
     assert main_window._board_editor.board_fen == STARTING_BOARD_FEN
     assert main_window._metadata_panel._capture_controls["lighting"].currentData() == "even"
     assert main_window._metadata_panel._capture_group.currentText() == "session-001"
+    assert main_window._metadata_panel._content_cohort.currentData() == "screen_photo"
 
 
 def test_confirm_and_clear_fen_turn_the_scaffold_into_an_explicit_value(main_window, labelimg_dataset, monkeypatch):

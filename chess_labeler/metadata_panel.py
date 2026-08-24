@@ -120,6 +120,18 @@ ORIENTATION_OPTIONS: list[tuple[str, str]] = [
     ("Đỏ ở bên phải", "red_at_right"),
 ]
 
+# A blank value deliberately means "not labeled yet".  It is not persisted as
+# ``unknown`` because old sidecars and new drafts must remain distinguishable
+# from an annotator explicitly choosing the unknown cohort.
+CONTENT_COHORT_OPTIONS: list[tuple[str, str | None]] = [
+    ("Chưa gán nhãn", None),
+    ("Bàn cờ thật", "real"),
+    ("Ảnh chụp màn hình", "native_screenshot"),
+    ("Render tạo bằng code", "procedural_render"),
+    ("Ảnh chụp lại màn hình", "screen_photo"),
+    ("Chưa xác định", "unknown"),
+]
+
 _FIELD_LABELS = {
     "lighting": "Ánh sáng",
     "shadow": "Bóng đổ",
@@ -218,6 +230,10 @@ class MetadataPanel(QWidget):
         fen_actions_layout.addWidget(clear_fen)
         board_grid.addWidget(fen_actions, 1, 2, 1, 2)
 
+        self._content_cohort = self._combo(CONTENT_COHORT_OPTIONS, self)
+        self._content_cohort.setObjectName("capture_content_cohort")
+        self._add_compact_field(board_grid, 2, 0, "Loại ảnh:", self._content_cohort, self)
+
         self._corner_validation = QLabel("", self)
         self._corner_validation.setObjectName("cornerValidation")
         self._corner_validation.setWordWrap(True)
@@ -275,6 +291,32 @@ class MetadataPanel(QWidget):
             self,
         )
 
+        self._style_or_app = QLineEdit(self)
+        self._style_or_app.setObjectName("capture_style_or_app")
+        self._style_or_app.setPlaceholderText("Ví dụ: Xiangqi app A, Ky Nhan marble")
+        self._add_compact_field(
+            capture_grid,
+            (len(capture_fields) + 1) // 2,
+            2,
+            "App / style:",
+            self._style_or_app,
+            self,
+        )
+
+        extra_row = (len(capture_fields) + 3) // 2
+        self._capture_session = QLineEdit(self)
+        self._capture_session.setObjectName("capture_capture_session")
+        self._capture_session.setPlaceholderText("Buổi / thiết bị (tùy chọn)")
+        self._add_compact_field(
+            capture_grid, extra_row, 0, "Buổi chụp:", self._capture_session, self
+        )
+        self._position_id = QLineEdit(self)
+        self._position_id.setObjectName("capture_position_id")
+        self._position_id.setPlaceholderText("Mã nhóm thế cờ (tùy chọn)")
+        self._add_compact_field(
+            capture_grid, extra_row, 2, "Mã thế cờ:", self._position_id, self
+        )
+
         template_row = QHBoxLayout()
         template_row.setContentsMargins(0, 0, 0, 0)
         next_button = QPushButton("Áp dụng cho ảnh tiếp", self)
@@ -293,17 +335,19 @@ class MetadataPanel(QWidget):
         self._notes.setPlaceholderText("Ghi chú (tùy chọn)")
         root.addWidget(self._notes)
 
-        for combo in [self._orientation, *self._capture_controls.values()]:
+        for combo in [self._orientation, self._content_cohort, *self._capture_controls.values()]:
             combo.currentIndexChanged.connect(self._emit_changed)
         self._capture_controls["occlusion"].currentIndexChanged.connect(self._sync_occlusion_severity)
         self._capture_group.currentTextChanged.connect(self._emit_changed)
         self._capture_group.lineEdit().editingFinished.connect(self._emit_changed)
+        for edit in (self._style_or_app, self._capture_session, self._position_id):
+            edit.editingFinished.connect(self._emit_changed)
         self._notes.editingFinished.connect(self._emit_changed)
 
         self.set_values({})
 
     @staticmethod
-    def _combo(options: list[tuple[str, str]], parent: QWidget) -> QComboBox:
+    def _combo(options: list[tuple[str, str | None]], parent: QWidget) -> QComboBox:
         combo = QComboBox(parent)
         for label, value in options:
             combo.addItem(label, value)
@@ -333,6 +377,12 @@ class MetadataPanel(QWidget):
     @staticmethod
     def _set_combo_data(combo: QComboBox, value: object, fallback: str = "unknown") -> None:
         code = value if isinstance(value, str) and value else fallback
+        index = combo.findData(code)
+        combo.setCurrentIndex(index if index >= 0 else 0)
+
+    @staticmethod
+    def _set_optional_combo_data(combo: QComboBox, value: object) -> None:
+        code = value if isinstance(value, str) and value else None
         index = combo.findData(code)
         combo.setCurrentIndex(index if index >= 0 else 0)
 
@@ -384,9 +434,13 @@ class MetadataPanel(QWidget):
         self._loading = True
         try:
             self._set_combo_data(self._orientation, board.get("image_orientation"))
+            self._set_optional_combo_data(self._content_cohort, capture.get("content_cohort"))
             for field, combo in self._capture_controls.items():
                 self._set_combo_data(combo, capture.get(field))
             self._set_capture_group(capture.get("capture_group"))
+            self._style_or_app.setText(str(capture.get("style_or_app") or ""))
+            self._capture_session.setText(str(capture.get("capture_session") or ""))
+            self._position_id.setText(str(capture.get("position_id") or ""))
             self._notes.setText(str(review.get("notes") or ""))
             self._set_presence(
                 self._corner_presence,
@@ -417,6 +471,10 @@ class MetadataPanel(QWidget):
             for field, combo in self._capture_controls.items()
         }
         capture["capture_group"] = self._capture_group_value()
+        capture["content_cohort"] = self._content_cohort.currentData()
+        capture["style_or_app"] = self._optional_text(self._style_or_app)
+        capture["capture_session"] = self._optional_text(self._capture_session)
+        capture["position_id"] = self._optional_text(self._position_id)
         return {
             "board": {"image_orientation": self._combo_value(self._orientation)},
             "capture": capture,
@@ -432,6 +490,10 @@ class MetadataPanel(QWidget):
             for field, combo in self._capture_controls.items():
                 self._set_combo_data(combo, capture.get(field))
             self._set_capture_group(capture.get("capture_group"))
+            self._set_optional_combo_data(self._content_cohort, capture.get("content_cohort"))
+            self._style_or_app.setText(str(capture.get("style_or_app") or ""))
+            self._capture_session.setText(str(capture.get("capture_session") or ""))
+            self._position_id.setText(str(capture.get("position_id") or ""))
         finally:
             self._loading = False
 
@@ -457,6 +519,11 @@ class MetadataPanel(QWidget):
                 self._capture_group.setCurrentIndex(0)
         finally:
             self._capture_group.blockSignals(False)
+
+    @staticmethod
+    def _optional_text(edit: QLineEdit) -> str | None:
+        text = edit.text().strip()
+        return text or None
 
     def set_validation(self, corner_errors: list[str], fen_errors: list[str]) -> None:
         self._corner_errors = list(corner_errors)

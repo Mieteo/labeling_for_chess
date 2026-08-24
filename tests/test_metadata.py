@@ -44,7 +44,7 @@ def test_new_metadata_has_safe_unannotated_defaults(tmp_path: Path):
     image_path = tmp_path / "0105.jpg"
     result = metadata.new_metadata(image_path, *IMAGE_SIZE)
 
-    assert result.schema_version == 1
+    assert result.schema_version == 2
     assert result.image == metadata.ImageFingerprint("0105.jpg", 640, 480)
     assert result.board.corners_px == {name: None for name in metadata.CORNER_NAMES}
     assert result.board.corners_status == "unmarked"
@@ -53,6 +53,7 @@ def test_new_metadata_has_safe_unannotated_defaults(tmp_path: Path):
     assert result.board.full_fen is None
     assert result.capture.lighting == "unknown"
     assert result.capture.device_model == "unknown"
+    assert result.capture.content_cohort is None
     assert result.review.status == "unreviewed"
 
 
@@ -230,10 +231,62 @@ def test_full_fen_must_match_board_fen_and_known_side(tmp_path: Path):
 def test_unsupported_schema_version_is_not_silently_accepted(tmp_path: Path):
     image_path = tmp_path / "0105.jpg"
     payload = metadata.new_metadata(image_path, *IMAGE_SIZE).to_dict()
-    payload["schema_version"] = 2
+    payload["schema_version"] = 3
     metadata.metadata_path_for_image(image_path).write_text(
         json.dumps(payload), encoding="utf-8"
     )
 
     with pytest.raises(metadata.UnsupportedMetadataSchemaError):
         metadata.load_metadata(image_path, expected_image_size=IMAGE_SIZE)
+
+
+def test_schema_v1_sidecar_loads_without_inferring_content_cohort(tmp_path: Path):
+    image_path = tmp_path / "0105.jpg"
+    source = _complete_metadata(image_path)
+    source.capture.capture_group = "legacy-session"
+    payload = source.to_dict()
+    payload["schema_version"] = 1
+    for field in ("content_cohort", "style_or_app", "capture_session", "position_id"):
+        del payload["capture"][field]
+    metadata.metadata_path_for_image(image_path).write_text(json.dumps(payload), encoding="utf-8")
+
+    loaded = metadata.load_metadata(image_path, expected_image_size=IMAGE_SIZE)
+
+    assert loaded is not None
+    assert loaded.schema_version == 2
+    assert loaded.capture.content_cohort is None
+    assert loaded.capture.capture_group == "legacy-session"
+    assert loaded.board.corners_px == source.board.corners_px
+    assert loaded.board.board_fen == source.board.board_fen
+    assert loaded.review == source.review
+
+    metadata.save_metadata_atomic(image_path, loaded, expected_image_size=IMAGE_SIZE)
+    migrated = json.loads(metadata.metadata_path_for_image(image_path).read_text(encoding="utf-8"))
+    assert migrated["schema_version"] == 2
+    assert migrated["capture"]["content_cohort"] is None
+
+
+@pytest.mark.parametrize("cohort", sorted(metadata.CONTENT_COHORTS))
+def test_content_cohort_round_trips_each_allowed_value(tmp_path: Path, cohort: str):
+    image_path = tmp_path / f"{cohort}.jpg"
+    source = metadata.new_metadata(image_path, *IMAGE_SIZE)
+    source.capture.content_cohort = cohort
+    source.capture.style_or_app = "Xiangqi app A"
+    source.capture.capture_session = "phone-01"
+    source.capture.position_id = "position-17"
+
+    metadata.save_metadata_atomic(image_path, source, expected_image_size=IMAGE_SIZE)
+    loaded = metadata.load_metadata(image_path, expected_image_size=IMAGE_SIZE)
+
+    assert loaded == source
+    assert loaded.capture.content_cohort == cohort
+    assert loaded.capture.style_or_app == "Xiangqi app A"
+
+
+def test_invalid_content_cohort_is_rejected(tmp_path: Path):
+    image_path = tmp_path / "0105.jpg"
+    source = metadata.new_metadata(image_path, *IMAGE_SIZE)
+    source.capture.content_cohort = "digital"
+
+    with pytest.raises(metadata.MetadataSchemaError, match="capture.content_cohort"):
+        metadata.save_metadata_atomic(image_path, source, expected_image_size=IMAGE_SIZE)

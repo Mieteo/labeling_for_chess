@@ -31,7 +31,11 @@ from pathlib import Path
 from typing import Any
 
 
-METADATA_SCHEMA_VERSION = 1
+METADATA_SCHEMA_VERSION = 2
+LEGACY_METADATA_SCHEMA_VERSION = 1
+SUPPORTED_METADATA_SCHEMA_VERSIONS = frozenset(
+    {LEGACY_METADATA_SCHEMA_VERSION, METADATA_SCHEMA_VERSION}
+)
 METADATA_SUFFIX = ".meta.json"
 
 CORNER_NAMES = ("top_left", "top_right", "bottom_right", "bottom_left")
@@ -55,6 +59,9 @@ REVIEW_STATUSES = frozenset(
     {"unreviewed", "annotated", "self_checked", "gold_verified", "needs_review"}
 )
 SIDES_TO_MOVE = frozenset({"red", "black"})
+CONTENT_COHORTS = frozenset(
+    {"real", "native_screenshot", "procedural_render", "screen_photo", "unknown"}
+)
 
 CAPTURE_ENUMS: dict[str, frozenset[str]] = {
     "lighting": frozenset({"unknown", "very_dark", "dim", "even", "bright", "mixed"}),
@@ -84,7 +91,16 @@ _BOARD_KEYS = frozenset(
         "fen_status",
     }
 )
-_CAPTURE_KEYS = frozenset({*CAPTURE_ENUMS, "device_model", "capture_group"})
+_CAPTURE_KEYS_V1 = frozenset({*CAPTURE_ENUMS, "device_model", "capture_group"})
+_CAPTURE_KEYS = frozenset(
+    {
+        *_CAPTURE_KEYS_V1,
+        "content_cohort",
+        "style_or_app",
+        "capture_session",
+        "position_id",
+    }
+)
 _REVIEW_KEYS = frozenset(
     {
         "status",
@@ -107,7 +123,7 @@ class MetadataDecodeError(MetadataError):
 
 
 class MetadataSchemaError(MetadataError):
-    """The sidecar JSON is valid but does not conform to schema version 1."""
+    """The sidecar JSON is valid but does not conform to a supported schema."""
 
 
 class UnsupportedMetadataSchemaError(MetadataSchemaError):
@@ -199,6 +215,12 @@ class CaptureMetadata:
     environment: str = "unknown"
     device_model: str = "unknown"
     capture_group: str | None = None
+    # ``None`` means the annotator has not supplied this new field.  It is
+    # intentionally distinct from the explicit ``unknown`` cohort.
+    content_cohort: str | None = None
+    style_or_app: str | None = None
+    capture_session: str | None = None
+    position_id: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -215,6 +237,10 @@ class CaptureMetadata:
             "environment": self.environment,
             "device_model": self.device_model,
             "capture_group": self.capture_group,
+            "content_cohort": self.content_cohort,
+            "style_or_app": self.style_or_app,
+            "capture_session": self.capture_session,
+            "position_id": self.position_id,
         }
 
 
@@ -242,7 +268,7 @@ class ReviewMetadata:
 
 @dataclasses.dataclass
 class ImageMetadata:
-    """The complete version-1 sidecar model."""
+    """The complete current sidecar model (schema version 2)."""
 
     image: ImageFingerprint
     board: BoardMetadata = dataclasses.field(default_factory=BoardMetadata)
@@ -333,15 +359,21 @@ def metadata_to_dict(metadata: ImageMetadata) -> dict[str, object]:
 
 
 def metadata_from_dict(data: object) -> ImageMetadata:
-    """Parse and validate a schema-version-1 JSON object into a model."""
+    """Parse schema v1/v2 JSON and migrate v1 in memory to the v2 model.
+
+    Reading a v1 sidecar never writes it and never infers a cohort.  If a
+    user later saves an edited record, the regular atomic save writes v2 with
+    ``content_cohort: null`` and the preserved legacy values.
+    """
 
     root = _as_mapping(data, "metadata")
     _require_exact_keys(root, _TOP_LEVEL_KEYS, "metadata")
 
     version = _as_int(root["schema_version"], "schema_version")
-    if version != METADATA_SCHEMA_VERSION:
+    if version not in SUPPORTED_METADATA_SCHEMA_VERSIONS:
         raise UnsupportedMetadataSchemaError(
-            f"unsupported metadata schema_version {version}; expected {METADATA_SCHEMA_VERSION}"
+            f"unsupported metadata schema_version {version}; expected one of "
+            f"{', '.join(str(item) for item in sorted(SUPPORTED_METADATA_SCHEMA_VERSIONS))}"
         )
 
     image_data = _as_mapping(root["image"], "image")
@@ -373,7 +405,11 @@ def metadata_from_dict(data: object) -> ImageMetadata:
     )
 
     capture_data = _as_mapping(root["capture"], "capture")
-    _require_exact_keys(capture_data, _CAPTURE_KEYS, "capture")
+    _require_exact_keys(
+        capture_data,
+        _CAPTURE_KEYS if version == METADATA_SCHEMA_VERSION else _CAPTURE_KEYS_V1,
+        "capture",
+    )
     capture_values = {
         name: _as_enum(capture_data[name], allowed, f"capture.{name}")
         for name, allowed in CAPTURE_ENUMS.items()
@@ -382,6 +418,26 @@ def metadata_from_dict(data: object) -> ImageMetadata:
         **capture_values,
         device_model=_as_string(capture_data["device_model"], "capture.device_model"),
         capture_group=_optional_string(capture_data["capture_group"], "capture.capture_group"),
+        content_cohort=(
+            _optional_enum(capture_data["content_cohort"], CONTENT_COHORTS, "capture.content_cohort")
+            if version == METADATA_SCHEMA_VERSION
+            else None
+        ),
+        style_or_app=(
+            _optional_string(capture_data["style_or_app"], "capture.style_or_app")
+            if version == METADATA_SCHEMA_VERSION
+            else None
+        ),
+        capture_session=(
+            _optional_string(capture_data["capture_session"], "capture.capture_session")
+            if version == METADATA_SCHEMA_VERSION
+            else None
+        ),
+        position_id=(
+            _optional_string(capture_data["position_id"], "capture.position_id")
+            if version == METADATA_SCHEMA_VERSION
+            else None
+        ),
     )
 
     review_data = _as_mapping(root["review"], "review")
@@ -404,7 +460,7 @@ def metadata_from_dict(data: object) -> ImageMetadata:
         board=board,
         capture=capture,
         review=review,
-        schema_version=version,
+        schema_version=METADATA_SCHEMA_VERSION,
     )
     validate_metadata(metadata)
     return metadata
@@ -549,6 +605,10 @@ def validate_metadata(metadata: ImageMetadata) -> None:
         _as_enum(getattr(metadata.capture, name), allowed, f"capture.{name}")
     _as_string(metadata.capture.device_model, "capture.device_model")
     _optional_string(metadata.capture.capture_group, "capture.capture_group")
+    _optional_enum(metadata.capture.content_cohort, CONTENT_COHORTS, "capture.content_cohort")
+    _optional_string(metadata.capture.style_or_app, "capture.style_or_app")
+    _optional_string(metadata.capture.capture_session, "capture.capture_session")
+    _optional_string(metadata.capture.position_id, "capture.position_id")
 
     if not isinstance(metadata.review, ReviewMetadata):
         raise MetadataSchemaError("review must be a ReviewMetadata")

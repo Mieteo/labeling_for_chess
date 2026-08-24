@@ -824,6 +824,8 @@ class MainWindow(QMainWindow):
             self._metadata_panel.set_values(self._metadata.to_dict())
             self._refresh_metadata_validation()
             self._sync_dirty_state()
+        if changed_count:
+            self._file_list_panel.refresh_all_content_cohorts()
         self.statusBar().showMessage(
             f"Đã áp dụng điều kiện cho {changed_count} ảnh"
             + (f"; bỏ qua {skipped_count} ảnh lỗi." if skipped_count else "."),
@@ -1018,6 +1020,8 @@ class MainWindow(QMainWindow):
             self._recent_capture_groups, self._metadata.capture.capture_group
         )
         self._metadata_panel.set_recent_values(self._recent_device_models, self._recent_capture_groups)
+        if self._current_index >= 0:
+            self._file_list_panel.refresh_content_cohort_at(self._current_index)
         return True
 
     def _save_current_image(self) -> bool:

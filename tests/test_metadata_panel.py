@@ -27,6 +27,10 @@ def test_capture_dropdowns_show_vietnamese_and_persist_stable_schema_codes():
         assert panel._capture_group.isEditable()
         assert panel._capture_group.currentData() == ""
         assert panel.values()["capture"]["capture_group"] is None
+        assert panel._content_cohort.currentText() == "Chưa gán nhãn"
+        assert panel.values()["capture"]["content_cohort"] is None
+        panel._content_cohort.setCurrentIndex(panel._content_cohort.findData("screen_photo"))
+        assert panel.values()["capture"]["content_cohort"] == "screen_photo"
 
         panel.set_recent_values([], ["session-002", "session-001"])
         assert panel._capture_group.itemData(1) == "session-002"
@@ -65,5 +69,7 @@ def test_metadata_panel_is_one_no_scroll_form_with_value_based_statuses():
         panel.set_values({"capture": {"capture_group": "session-017"}})
         assert panel._capture_group.currentText() == "session-017"
         assert panel.values()["capture"]["capture_group"] == "session-017"
+        panel.set_values({"capture": {"content_cohort": "procedural_render"}})
+        assert panel._content_cohort.currentText() == "Render tạo bằng code"
     finally:
         panel.close()

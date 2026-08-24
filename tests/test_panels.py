@@ -2,7 +2,8 @@ from PySide6.QtCore import QRectF
 from PySide6.QtWidgets import QApplication
 
 from chess_labeler.canvas import BoxItem
-from chess_labeler.panels import BoxListPanel
+from chess_labeler import metadata
+from chess_labeler.panels import BoxListPanel, FileListPanel
 
 
 def _ensure_qapp():
@@ -95,3 +96,34 @@ def test_clicking_an_item_emits_the_right_box_from_either_column():
 
     panel._on_clicked(panel._black_list, panel._black_list.item(0))
     assert emitted == [red_box, black_box]
+
+
+def test_file_list_filters_and_counts_unassigned_and_unknown_content_cohorts(tmp_path):
+    _ensure_qapp()
+    paths = [tmp_path / f"{name}.jpg" for name in ("real", "unknown", "unassigned")]
+    for path in paths:
+        path.write_bytes(b"")
+    for path, cohort in zip(paths[:2], ("real", "unknown")):
+        record = metadata.new_metadata(path, 10, 10)
+        record.capture.content_cohort = cohort
+        metadata.save_metadata_atomic(path, record, expected_image_size=(10, 10))
+
+    panel = FileListPanel()
+    try:
+        panel.set_images(paths)
+        assert panel.content_cohort_counts() == {
+            "unassigned": 1,
+            "native_screenshot": 0,
+            "procedural_render": 0,
+            "real": 1,
+            "screen_photo": 0,
+            "unknown": 1,
+        }
+        panel._cohort_filter.setCurrentIndex(panel._cohort_filter.findData("unassigned"))
+        assert panel._list.count() == 1
+        assert panel._list.item(0).text().endswith("unassigned.jpg")
+        panel._cohort_filter.setCurrentIndex(panel._cohort_filter.findData("unknown"))
+        assert panel._list.count() == 1
+        assert panel._list.item(0).text().endswith("unknown.jpg")
+    finally:
+        panel.close()
