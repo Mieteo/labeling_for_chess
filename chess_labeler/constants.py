@@ -36,3 +36,10 @@ SESSION_FILENAME = ".labeling_session.json"
 AUTO_SCAN_MIN_RADIUS_FRACTION = 0.015  # 1.5% of image width
 AUTO_SCAN_MAX_RADIUS_FRACTION = 0.06  # 6% of image width
 DEFAULT_RADIUS_TOLERANCE_PCT = 15.0  # +/-15%
+
+# Digital ONNX auto-detect defaults -- see
+# yeu_cau_tu_app_ky_nhan.md section 3.1 (exact values the source app uses).
+AUTO_DETECT_INPUT_SIZE = 640
+AUTO_DETECT_LETTERBOX_COLOR = 114
+DEFAULT_AUTO_DETECT_CONF_THRESHOLD = 0.25
+DEFAULT_AUTO_DETECT_IOU_THRESHOLD = 0.45

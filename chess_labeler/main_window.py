@@ -9,7 +9,6 @@ import dataclasses
 import copy
 from pathlib import Path
 
-import cv2
 import numpy as np
 from PySide6.QtCore import QEvent, QFile, QPointF, QRectF, QSettings, Qt
 from PySide6.QtGui import QAction, QKeySequence, QPixmap
@@ -26,6 +25,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QMessageBox,
+    QProgressDialog,
     QPushButton,
     QSizePolicy,
     QStatusBar,
@@ -36,10 +36,16 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import circle_detect, metadata, session, yolo_io
+from . import auto_detect, circle_detect, image_mode, metadata, session, suggestions, yolo_io
+from .auto_detect_worker import AutoDetectBatchWorker
 from .board_editor import STARTING_BOARD_FEN, XiangqiBoardEditor, describe_validation_issue
 from .canvas import BoxItem, CanvasMode, ImageCanvas
-from .constants import DEFAULT_RADIUS_TOLERANCE_PCT
+from .constants import (
+    DEFAULT_AUTO_DETECT_CONF_THRESHOLD,
+    DEFAULT_AUTO_DETECT_IOU_THRESHOLD,
+    DEFAULT_RADIUS_TOLERANCE_PCT,
+)
+from .imaging import read_image_bgr
 from .key_shortcuts import HAND_CLASS, resolve_piece_class
 from .metadata_panel import MetadataPanel
 from .panels import BoxListPanel, FileListPanel
@@ -60,6 +66,12 @@ _ROLE_KEY_CODES = {
 # labeling progress and travels with the folder across machines.
 _LAST_DIR_SETTINGS_KEY = "last_image_dir"
 
+# QSettings key for the last-chosen ONNX auto-detect model path -- also a
+# machine-local preference (the .onnx file lives outside this repo and is
+# not vendored/shared across machines, see yeu_cau_tu_app_ky_nhan.md
+# section 3.1).
+_LAST_MODEL_PATH_SETTINGS_KEY = "last_onnx_model_path"
+
 
 @dataclasses.dataclass(frozen=True)
 class _BoxSnapshot:
@@ -71,14 +83,6 @@ class _BoxSnapshot:
 @dataclasses.dataclass(frozen=True)
 class _CornerSnapshot:
     corners: tuple[tuple[str, float, float] | None, ...]
-
-
-def _read_image_bgr(path: Path) -> np.ndarray | None:
-    """Unicode-path-safe read (cv2.imread mishandles non-ASCII paths on Windows)."""
-    data = np.fromfile(str(path), dtype=np.uint8)
-    if data.size == 0:
-        return None
-    return cv2.imdecode(data, cv2.IMREAD_COLOR)
 
 
 class MainWindow(QMainWindow):
@@ -115,6 +119,14 @@ class MainWindow(QMainWindow):
 
         self._reference_radius_px: float | None = None
 
+        # "physical" or "digital" -- see image_mode.py. Decided for real once
+        # a directory is opened (inferred from its name, or the session
+        # override); the default here only matters before that happens.
+        self._image_mode: str = image_mode.PHYSICAL
+        self._auto_detector: auto_detect.AutoDetector | None = None
+        self._auto_detect_worker: AutoDetectBatchWorker | None = None
+        self._auto_detect_progress: QProgressDialog | None = None
+
         self._canvas = ImageCanvas(self)
         self.setCentralWidget(self._canvas)
         self._canvas.on_drag_begin = self._on_drag_begin
@@ -135,6 +147,11 @@ class MainWindow(QMainWindow):
         app = QApplication.instance()
         if app is not None:
             app.installEventFilter(self)
+
+        self._apply_image_mode(self._image_mode)
+        last_model_path = self._app_settings.value(_LAST_MODEL_PATH_SETTINGS_KEY, "", type=str)
+        if last_model_path:
+            self._model_path_edit.setText(last_model_path)
 
         self._update_window_title()
         self._update_undo_redo_actions()
@@ -200,7 +217,8 @@ class MainWindow(QMainWindow):
         self._radius_spin.setDecimals(1)
         self._radius_spin.setMaximumWidth(105)
         self._radius_spin.valueChanged.connect(self._on_radius_spin_changed)
-        assist_layout.addWidget(QLabel("Bán kính:", assist_group), 1, 0)
+        radius_label = QLabel("Bán kính:", assist_group)
+        assist_layout.addWidget(radius_label, 1, 0)
         assist_layout.addWidget(self._radius_spin, 1, 1)
 
         self._tolerance_spin = QDoubleSpinBox(assist_group)
@@ -209,7 +227,8 @@ class MainWindow(QMainWindow):
         self._tolerance_spin.setSuffix(" %")
         self._tolerance_spin.setValue(DEFAULT_RADIUS_TOLERANCE_PCT)
         self._tolerance_spin.setMaximumWidth(105)
-        assist_layout.addWidget(QLabel("Dung sai:", assist_group), 1, 2)
+        tolerance_label = QLabel("Dung sai:", assist_group)
+        assist_layout.addWidget(tolerance_label, 1, 2)
         assist_layout.addWidget(self._tolerance_spin, 1, 3)
 
         rerun_btn = QPushButton("Chạy lại", assist_group)
@@ -222,10 +241,67 @@ class MainWindow(QMainWindow):
         autoscan_btn.clicked.connect(lambda: self._run_detection("auto_scan"))
         assist_layout.addWidget(autoscan_btn, 2, 2)
 
+        # Circle-detect (Physical only) -- hidden, not removed, in Digital
+        # mode (see yeu_cau_tu_app_ky_nhan.md section 2).
+        self._physical_assist_widgets: list[QWidget] = [
+            measure_btn, radius_label, self._radius_spin, tolerance_label,
+            self._tolerance_spin, rerun_btn, autoscan_btn,
+        ]
+
+        # ---- Digital auto-detect (ONNX) controls ----------------------
+        self._model_path_edit = QLineEdit(assist_group)
+        self._model_path_edit.setReadOnly(True)
+        self._model_path_edit.setPlaceholderText("Chưa chọn model .onnx")
+        choose_model_btn = QPushButton("Chọn model...", assist_group)
+        choose_model_btn.setToolTip("Chọn file model .onnx dùng để auto-detect (xem mục 3.1)")
+        choose_model_btn.clicked.connect(self._choose_auto_detect_model)
+        model_label = QLabel("Model .onnx:", assist_group)
+        assist_layout.addWidget(model_label, 3, 0)
+        assist_layout.addWidget(self._model_path_edit, 3, 1, 1, 2)
+        assist_layout.addWidget(choose_model_btn, 3, 3)
+
+        self._conf_spin = QDoubleSpinBox(assist_group)
+        self._conf_spin.setRange(0.01, 1.0)
+        self._conf_spin.setSingleStep(0.05)
+        self._conf_spin.setDecimals(2)
+        self._conf_spin.setValue(DEFAULT_AUTO_DETECT_CONF_THRESHOLD)
+        self._conf_spin.setMaximumWidth(105)
+        conf_label = QLabel("Conf:", assist_group)
+        assist_layout.addWidget(conf_label, 4, 0)
+        assist_layout.addWidget(self._conf_spin, 4, 1)
+
+        self._iou_spin = QDoubleSpinBox(assist_group)
+        self._iou_spin.setRange(0.01, 1.0)
+        self._iou_spin.setSingleStep(0.05)
+        self._iou_spin.setDecimals(2)
+        self._iou_spin.setValue(DEFAULT_AUTO_DETECT_IOU_THRESHOLD)
+        self._iou_spin.setMaximumWidth(105)
+        iou_label = QLabel("NMS IoU:", assist_group)
+        assist_layout.addWidget(iou_label, 4, 2)
+        assist_layout.addWidget(self._iou_spin, 4, 3)
+
+        auto_detect_current_btn = QPushButton("Auto-detect (ảnh này)", assist_group)
+        auto_detect_current_btn.setToolTip("Chạy model AI trên ảnh đang mở, sinh gợi ý box + lớp")
+        auto_detect_current_btn.clicked.connect(self._run_auto_detect_current)
+        assist_layout.addWidget(auto_detect_current_btn, 5, 0, 1, 2)
+        self._auto_detect_current_btn = auto_detect_current_btn
+
+        auto_detect_batch_btn = QPushButton("Auto-detect (hàng loạt)", assist_group)
+        auto_detect_batch_btn.setToolTip("Chạy model AI cho toàn bộ ảnh chưa gán nhãn trong thư mục")
+        auto_detect_batch_btn.clicked.connect(self._run_auto_detect_batch)
+        assist_layout.addWidget(auto_detect_batch_btn, 5, 2, 1, 2)
+        self._auto_detect_batch_btn = auto_detect_batch_btn
+
+        self._digital_assist_widgets: list[QWidget] = [
+            model_label, self._model_path_edit, choose_model_btn,
+            conf_label, self._conf_spin, iou_label, self._iou_spin,
+            auto_detect_current_btn, auto_detect_batch_btn,
+        ]
+
         clear_btn = QPushButton("Xóa gợi ý", assist_group)
         clear_btn.setToolTip("Xóa các gợi ý chưa xác nhận")
         clear_btn.clicked.connect(self._clear_unconfirmed_suggestions)
-        assist_layout.addWidget(clear_btn, 2, 3)
+        assist_layout.addWidget(clear_btn, 6, 3)
         assist_layout.setColumnStretch(4, 1)
         annotation_layout.addWidget(assist_group)
 
@@ -269,6 +345,18 @@ class MainWindow(QMainWindow):
         open_action.setShortcut(QKeySequence("Ctrl+O"))
         open_action.triggered.connect(self.open_directory)
         toolbar.addAction(open_action)
+
+        toolbar.addSeparator()
+        toolbar.addWidget(QLabel(" Chế độ ảnh: ", self))
+        self._mode_combo = QComboBox(self)
+        self._mode_combo.addItem("Physical (ảnh chụp thật)", image_mode.PHYSICAL)
+        self._mode_combo.addItem("Digital (ảnh chụp màn hình)", image_mode.DIGITAL)
+        self._mode_combo.setToolTip(
+            "Tự suy luận theo tên thư mục khi mở; có thể ghi đè tay tại đây (xem mục 2)"
+        )
+        self._mode_combo.currentIndexChanged.connect(self._on_mode_combo_changed)
+        toolbar.addWidget(self._mode_combo)
+        toolbar.addSeparator()
 
         save_action = QAction("Lưu", self)
         save_action.setShortcut(QKeySequence("Ctrl+S"))
@@ -400,9 +488,20 @@ class MainWindow(QMainWindow):
             self._radius_spin.blockSignals(False)
         if state.last_tolerance_pct:
             self._tolerance_spin.setValue(state.last_tolerance_pct)
+        if state.last_auto_detect_conf is not None:
+            self._conf_spin.setValue(state.last_auto_detect_conf)
+        if state.last_auto_detect_iou is not None:
+            self._iou_spin.setValue(state.last_auto_detect_iou)
         self._recent_device_models = list(state.recent_device_models)
         self._recent_capture_groups = list(state.recent_capture_groups)
         self._metadata_panel.set_recent_values(self._recent_device_models, self._recent_capture_groups)
+
+        # Explicit per-folder override wins; otherwise infer from the
+        # directory name. Not saved here -- the next _save_session_state()
+        # call (at the end of _load_image_at below) persists it together
+        # with the correct last_image for THIS directory.
+        mode = state.image_mode if state.image_mode is not None else image_mode.infer_mode_from_dirname(directory)
+        self._apply_image_mode(mode)
 
         if not self._images:
             QMessageBox.information(
@@ -415,6 +514,32 @@ class MainWindow(QMainWindow):
         resume_path = session.find_resume_image(directory, self._images)
         idx = self._images.index(resume_path) if resume_path in self._images else 0
         self._load_image_at(idx)
+
+    # ------------------------------------------------------------------
+    # Image mode: physical (circle-detect) vs digital (ONNX auto-detect)
+    # ------------------------------------------------------------------
+    def _apply_image_mode(self, mode: str) -> None:
+        self._image_mode = mode
+        self._mode_combo.blockSignals(True)
+        self._mode_combo.setCurrentIndex(0 if mode == image_mode.PHYSICAL else 1)
+        self._mode_combo.blockSignals(False)
+        self._apply_mode_visibility()
+
+    def _apply_mode_visibility(self) -> None:
+        is_digital = self._image_mode == image_mode.DIGITAL
+        for widget in self._physical_assist_widgets:
+            widget.setVisible(not is_digital)
+        for widget in self._digital_assist_widgets:
+            widget.setVisible(is_digital)
+
+    def _on_mode_combo_changed(self, index: int) -> None:
+        mode = image_mode.PHYSICAL if index == 0 else image_mode.DIGITAL
+        if mode == self._image_mode:
+            return
+        self._apply_image_mode(mode)
+        self._save_session_state()
+        label = "Digital (ảnh chụp màn hình)" if mode == image_mode.DIGITAL else "Physical (ảnh chụp thật)"
+        self.statusBar().showMessage(f"Đã chuyển chế độ ảnh (ghi đè tay): {label}", 3000)
 
     def _load_image_at(self, index: int) -> None:
         if not (0 <= index < len(self._images)):
@@ -436,6 +561,20 @@ class MainWindow(QMainWindow):
             name = yolo_io.class_name(self._classes, box.class_id)
             self._canvas.add_box_item(
                 QRectF(left, top, w, h), class_name=name, confirmed=True, emit_modified=False
+            )
+
+        # Pending auto-detect suggestions from a batch run (see
+        # yeu_cau_tu_app_ky_nhan.md section 3.4): seed the canvas as
+        # unconfirmed boxes, then consume (delete) the sidecar -- exactly
+        # like every other suggestion source in this tool, an unconfirmed
+        # box that is never explicitly confirmed and saved is not persisted.
+        for pending in suggestions.load_and_consume_suggestions(path):
+            left = (pending.xc - pending.w / 2) * pixmap.width()
+            top = (pending.yc - pending.h / 2) * pixmap.height()
+            w = pending.w * pixmap.width()
+            h = pending.h * pixmap.height()
+            self._canvas.add_box_item(
+                QRectF(left, top, w, h), class_name=pending.class_name, confirmed=False, emit_modified=False
             )
 
         self._undo_stack.clear()
@@ -469,7 +608,7 @@ class MainWindow(QMainWindow):
 
     def _ensure_image_bgr(self) -> np.ndarray | None:
         if self._current_image_bgr is None and self._current_image_path is not None:
-            self._current_image_bgr = _read_image_bgr(self._current_image_path)
+            self._current_image_bgr = read_image_bgr(self._current_image_path)
         return self._current_image_bgr
 
     # ------------------------------------------------------------------
@@ -1102,6 +1241,9 @@ class MainWindow(QMainWindow):
             last_tolerance_pct=self._tolerance_spin.value(),
             recent_device_models=self._recent_device_models,
             recent_capture_groups=self._recent_capture_groups,
+            image_mode=self._image_mode,
+            last_auto_detect_conf=self._conf_spin.value(),
+            last_auto_detect_iou=self._iou_spin.value(),
         )
         session.save_session(self._image_dir, state)
 
@@ -1349,6 +1491,119 @@ class MainWindow(QMainWindow):
         self._refresh_box_list()
 
     # ------------------------------------------------------------------
+    # Digital auto-detect (ONNX) -- yeu_cau_tu_app_ky_nhan.md section 3
+    # ------------------------------------------------------------------
+    def _choose_auto_detect_model(self) -> None:
+        start_dir = str(Path(self._model_path_edit.text()).parent) if self._model_path_edit.text() else ""
+        path, _ = QFileDialog.getOpenFileName(self, "Chọn model ONNX", start_dir, "ONNX model (*.onnx)")
+        if not path:
+            return
+        self._model_path_edit.setText(path)
+        self._app_settings.setValue(_LAST_MODEL_PATH_SETTINGS_KEY, path)
+        self._auto_detector = None  # force reload with the new path on next use
+
+    def _ensure_auto_detector(self) -> auto_detect.AutoDetector | None:
+        path = self._model_path_edit.text().strip()
+        if not path:
+            QMessageBox.information(
+                self, "Cần chọn model", "Hãy chọn file model .onnx trước khi chạy auto-detect."
+            )
+            return None
+        if self._auto_detector is not None and self._auto_detector.model_path == path:
+            return self._auto_detector
+        try:
+            self._auto_detector = auto_detect.AutoDetector(path)
+        except auto_detect.ModelLoadError as exc:
+            QMessageBox.warning(self, "Không thể tải model", str(exc))
+            self._auto_detector = None
+        return self._auto_detector
+
+    def _run_auto_detect_current(self) -> None:
+        image_bgr = self._ensure_image_bgr()
+        if image_bgr is None:
+            return
+        detector = self._ensure_auto_detector()
+        if detector is None:
+            return
+        try:
+            detections = detector.detect(image_bgr, self._conf_spin.value(), self._iou_spin.value())
+        except Exception as exc:
+            QMessageBox.warning(self, "Lỗi auto-detect", str(exc))
+            return
+
+        self._push_undo(self._snapshot())
+        self._canvas.clear_unconfirmed_suggestions()
+        bounds = self._canvas.image_bounds()
+        added = 0
+        for d in detections:
+            rect = QRectF(d.cx - d.w / 2, d.cy - d.h / 2, d.w, d.h).intersected(bounds)
+            if rect.width() < 2 or rect.height() < 2:
+                continue
+            self._canvas.add_box_item(rect, class_name=d.class_name, confirmed=False)
+            added += 1
+
+        self._mark_dirty()
+        self._refresh_box_list()
+        self._save_session_state()
+        self.statusBar().showMessage(f"Auto-detect: {added} gợi ý.", 3000)
+
+    def _run_auto_detect_batch(self) -> None:
+        if self._image_dir is None or not self._images:
+            return
+        detector = self._ensure_auto_detector()
+        if detector is None:
+            return
+        targets = [p for p in self._images if not yolo_io.has_label(p)]
+        if not targets:
+            QMessageBox.information(
+                self, "Không có ảnh cần xử lý", "Mọi ảnh trong thư mục đã có nhãn (.txt)."
+            )
+            return
+
+        conf = self._conf_spin.value()
+        iou = self._iou_spin.value()
+        self._save_session_state()
+
+        self._auto_detect_current_btn.setEnabled(False)
+        self._auto_detect_batch_btn.setEnabled(False)
+
+        progress = QProgressDialog("Đang chạy auto-detect hàng loạt...", "Hủy", 0, len(targets), self)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+        self._auto_detect_progress = progress
+
+        worker = AutoDetectBatchWorker(detector, targets, conf, iou, parent=self)
+        self._auto_detect_worker = worker
+        worker.progress.connect(self._on_auto_detect_batch_progress)
+        worker.finishedBatch.connect(lambda done, skipped: self._on_auto_detect_batch_finished(done, skipped, targets))
+        progress.canceled.connect(worker.cancel)
+        worker.start()
+
+    def _on_auto_detect_batch_progress(self, done: int, total: int, filename: str) -> None:
+        if self._auto_detect_progress is None:
+            return
+        if filename:
+            self._auto_detect_progress.setLabelText(f"Đang xử lý {filename} ({done}/{total})...")
+        self._auto_detect_progress.setValue(done)
+
+    def _on_auto_detect_batch_finished(self, processed: int, skipped: int, targets: list[Path]) -> None:
+        if self._auto_detect_progress is not None:
+            self._auto_detect_progress.setValue(self._auto_detect_progress.maximum())
+            self._auto_detect_progress.close()
+            self._auto_detect_progress = None
+        self._auto_detect_worker = None
+        self._auto_detect_current_btn.setEnabled(True)
+        self._auto_detect_batch_btn.setEnabled(True)
+        self.statusBar().showMessage(
+            f"Auto-detect hàng loạt xong: {processed} ảnh có gợi ý, {skipped} ảnh bị bỏ qua/lỗi.", 6000
+        )
+        # If the currently open image just received fresh suggestions and the
+        # user hasn't started editing it, show them immediately.
+        if not self._dirty and self._current_image_path in targets and self._current_index >= 0:
+            self._load_image_at(self._current_index)
+
+    # ------------------------------------------------------------------
     # Class-assignment shortcuts (global key event filter)
     # ------------------------------------------------------------------
     def eventFilter(self, obj, event) -> bool:  # noqa: N802
@@ -1425,7 +1680,10 @@ class MainWindow(QMainWindow):
             self._canvas.fit_to_window()
 
     def closeEvent(self, event) -> None:  # noqa: N802
-        if self._confirm_leave_current_image():
-            event.accept()
-        else:
+        if not self._confirm_leave_current_image():
             event.ignore()
+            return
+        if self._auto_detect_worker is not None and self._auto_detect_worker.isRunning():
+            self._auto_detect_worker.cancel()
+            self._auto_detect_worker.wait()
+        event.accept()

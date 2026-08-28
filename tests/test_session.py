@@ -77,3 +77,22 @@ def test_recent_metadata_values_roundtrip_and_stay_small_mru_lists(tmp_path: Pat
     updated = session.add_recent_value(state.recent_device_models, "Phone B")
     assert updated == ["Phone B", "Phone A"]
     assert session.add_recent_value(updated, "unknown") == updated
+
+
+def test_image_mode_and_auto_detect_thresholds_roundtrip(tmp_path: Path):
+    state = session.SessionState(image_mode="digital", last_auto_detect_conf=0.3, last_auto_detect_iou=0.5)
+    session.save_session(tmp_path, state)
+    assert session.load_session(tmp_path) == state
+
+
+def test_default_session_has_no_image_mode_override(tmp_path: Path):
+    state = session.load_session(tmp_path)
+    assert state.image_mode is None
+
+
+def test_invalid_image_mode_in_file_falls_back_to_none(tmp_path: Path):
+    (tmp_path / ".labeling_session.json").write_text(
+        json.dumps({"image_mode": "not_a_real_mode"}), encoding="utf-8"
+    )
+    state = session.load_session(tmp_path)
+    assert state.image_mode is None

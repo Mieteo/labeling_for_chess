@@ -17,6 +17,7 @@ from pathlib import Path
 
 from . import yolo_io
 from .constants import SESSION_FILENAME
+from .image_mode import MODES as _IMAGE_MODES
 
 
 @dataclasses.dataclass
@@ -29,6 +30,12 @@ class SessionState:
     # family / capture-session names (not EXIF, GPS, or personal IDs).
     recent_device_models: list[str] = dataclasses.field(default_factory=list)
     recent_capture_groups: list[str] = dataclasses.field(default_factory=list)
+    # "physical" / "digital" -- explicit user override of the per-directory
+    # image mode (yeu_cau_tu_app_ky_nhan.md section 2). None means "not
+    # overridden yet": the tool infers it from the directory name instead.
+    image_mode: str | None = None
+    last_auto_detect_conf: float | None = None
+    last_auto_detect_iou: float | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -37,16 +44,23 @@ class SessionState:
             "last_tolerance_pct": self.last_tolerance_pct,
             "recent_device_models": list(self.recent_device_models),
             "recent_capture_groups": list(self.recent_capture_groups),
+            "image_mode": self.image_mode,
+            "last_auto_detect_conf": self.last_auto_detect_conf,
+            "last_auto_detect_iou": self.last_auto_detect_iou,
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> "SessionState":
+        image_mode = data.get("image_mode")
         return cls(
             last_image=data.get("last_image"),
             last_radius_px=data.get("last_radius_px"),
             last_tolerance_pct=data.get("last_tolerance_pct"),
             recent_device_models=_clean_recent_values(data.get("recent_device_models")),
             recent_capture_groups=_clean_recent_values(data.get("recent_capture_groups")),
+            image_mode=image_mode if image_mode in _IMAGE_MODES else None,
+            last_auto_detect_conf=data.get("last_auto_detect_conf"),
+            last_auto_detect_iou=data.get("last_auto_detect_iou"),
         )
 
 
