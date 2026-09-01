@@ -20,7 +20,7 @@ from PIL import Image
 from PySide6.QtCore import QEvent, QRectF, QSettings, Qt
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from chess_labeler import auto_detect, image_mode, suggestions, yolo_io
 from chess_labeler.auto_detect_worker import AutoDetectBatchWorker
@@ -142,7 +142,7 @@ def test_auto_detect_current_image_adds_unconfirmed_suggestions_with_class(main_
     assert boxes[0].confirmed is False
 
 
-def test_auto_detect_suggestion_excluded_until_confirmed_then_saved(main_window, tmp_path):
+def test_auto_detect_suggestion_excluded_until_confirmed_then_saved(main_window, tmp_path, monkeypatch):
     d = _digital_dataset(tmp_path)
     main_window._open_directory(d)
     detection = auto_detect.Detection(cx=100, cy=80, w=40, h=60, class_name="red_cannon", score=0.83)
@@ -150,6 +150,11 @@ def test_auto_detect_suggestion_excluded_until_confirmed_then_saved(main_window,
     main_window._model_path_edit.setText("fake.onnx")
     main_window._run_auto_detect_current()
 
+    # Saving past an unconfirmed suggestion now warns first (answered here
+    # as "save anyway") -- the suggestion must still come out excluded.
+    monkeypatch.setattr(
+        QMessageBox, "warning", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Save)
+    )
     main_window._save_current_image()
     assert yolo_io.load_boxes(main_window._current_image_path) == []  # unconfirmed -> not saved
 
@@ -303,3 +308,82 @@ def test_ctrl_b_assigns_board_region(main_window, tmp_path):
 
     assert box.class_name == "board_region"
     assert box.confirmed is True
+
+
+# ---------------------------------------------------------------------
+# Batch auto-detect target choice: "only unlabeled" vs "entire folder"
+# ---------------------------------------------------------------------
+def _click_message_box_button_by_text(monkeypatch, text_prefix: str) -> None:
+    def fake_exec(self):
+        for b in self.buttons():
+            if b.text().startswith(text_prefix):
+                b.click()
+                return 0
+        raise AssertionError(f"no QMessageBox button starts with {text_prefix!r}")
+
+    monkeypatch.setattr(QMessageBox, "exec", fake_exec)
+
+
+def test_choose_batch_targets_unlabeled_only_skips_already_saved_images(main_window, tmp_path, monkeypatch):
+    d = _digital_dataset(tmp_path)
+    main_window._open_directory(d)
+    yolo_io.save_boxes(d / "d0001.png", [])  # mark as already reviewed/saved
+
+    _click_message_box_button_by_text(monkeypatch, "Chỉ ảnh chưa lưu")
+    targets = main_window._choose_auto_detect_batch_targets()
+
+    assert [p.name for p in targets] == ["d0002.png"]
+
+
+def test_choose_batch_targets_entire_folder_includes_already_saved_images(main_window, tmp_path, monkeypatch):
+    d = _digital_dataset(tmp_path)
+    main_window._open_directory(d)
+    yolo_io.save_boxes(d / "d0001.png", [])
+
+    _click_message_box_button_by_text(monkeypatch, "Toàn bộ")
+    targets = main_window._choose_auto_detect_batch_targets()
+
+    assert {p.name for p in targets} == {"d0001.png", "d0002.png"}
+
+
+def test_choose_batch_targets_cancel_returns_none(main_window, tmp_path, monkeypatch):
+    main_window._open_directory(_digital_dataset(tmp_path))
+
+    _click_message_box_button_by_text(monkeypatch, "Hủy")
+    assert main_window._choose_auto_detect_batch_targets() is None
+
+
+# ---------------------------------------------------------------------
+# Shift+D runs auto-detect on the current image
+# ---------------------------------------------------------------------
+def test_shift_d_runs_auto_detect_on_current_image(main_window, tmp_path):
+    main_window._open_directory(_digital_dataset(tmp_path))
+    detection = auto_detect.Detection(cx=100, cy=80, w=40, h=60, class_name="red_cannon", score=0.83)
+    main_window._auto_detector = _FakeDetector([detection])
+    main_window._model_path_edit.setText("fake.onnx")
+
+    QTest.keyClick(main_window._canvas, Qt.Key.Key_D, Qt.KeyboardModifier.ShiftModifier)
+
+    boxes = main_window._canvas.box_items()
+    assert len(boxes) == 1
+    assert boxes[0].class_name == "red_cannon"
+    assert boxes[0].confirmed is False
+
+
+def test_shift_d_does_not_fire_while_typing_in_a_text_field(qapp, main_window, tmp_path):
+    main_window._open_directory(_digital_dataset(tmp_path))
+    detection = auto_detect.Detection(cx=100, cy=80, w=40, h=60, class_name="red_cannon", score=0.83)
+    main_window._auto_detector = _FakeDetector([detection])
+    main_window._model_path_edit.setText("fake.onnx")
+
+    # A widget only becomes QApplication.focusWidget() once it (and its
+    # window) is actually shown -- setFocus() alone is a no-op here.
+    main_window.show()
+    notes_field = main_window._metadata_panel._notes
+    notes_field.setFocus()
+    qapp.processEvents()
+    assert QApplication.focusWidget() is notes_field
+
+    QTest.keyClick(notes_field, Qt.Key.Key_D, Qt.KeyboardModifier.ShiftModifier)
+
+    assert main_window._canvas.box_items() == []

@@ -282,7 +282,7 @@ class MainWindow(QMainWindow):
         assist_layout.addWidget(iou_label, 4, 2)
         assist_layout.addWidget(self._iou_spin, 4, 3)
 
-        auto_detect_current_btn = QPushButton("Auto-detect (ảnh này)", assist_group)
+        auto_detect_current_btn = QPushButton("Auto-detect (ảnh này) (Shift+D)", assist_group)
         auto_detect_current_btn.setToolTip("Chạy model AI trên ảnh đang mở, sinh gợi ý box + lớp")
         auto_detect_current_btn.clicked.connect(self._run_auto_detect_current)
         assist_layout.addWidget(auto_detect_current_btn, 5, 0, 1, 2)
@@ -1175,6 +1175,32 @@ class MainWindow(QMainWindow):
     def _save_current_image(self) -> bool:
         if self._current_image_path is None:
             return False
+
+        items = self._canvas.box_items()
+        # An unconfirmed suggestion is silently dropped from the .txt no
+        # matter which branch below runs (never-dirty fast path: nothing at
+        # all gets written for it; dirty path: it's filtered out of
+        # boxes_to_save) -- without this warning, "the AI got it right, so
+        # I'll just save" looks like Save does nothing, when it actually
+        # means "save discarded every unreviewed box and, if none were
+        # confirmed, may have just written an empty .txt over real
+        # suggestions."
+        unconfirmed = [b for b in items if not b.confirmed]
+        if unconfirmed:
+            resp = QMessageBox.warning(
+                self,
+                "Còn gợi ý chưa xác nhận",
+                f"{len(unconfirmed)} box gợi ý (auto-detect/circle-detect) CHƯA được xác nhận -- "
+                "nếu lưu bây giờ, các box này sẽ KHÔNG được ghi vào .txt và sẽ mất khi bạn rời "
+                "khỏi ảnh này.\n\nHãy xác nhận từng box trước (Enter giữ nguyên lớp model, hoặc "
+                "phím vai trò / Ctrl+H / Ctrl+B để đổi lớp), rồi lưu lại -- hoặc bấm 'Lưu' nếu "
+                "bạn chắc chắn muốn bỏ qua các box này.",
+                QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if resp != QMessageBox.StandardButton.Save:
+                return False
+
         if not self._boxes_dirty:
             if not self._save_metadata_if_dirty():
                 return False
@@ -1182,7 +1208,7 @@ class MainWindow(QMainWindow):
             self._save_session_state()
             self.statusBar().showMessage(f"Đã lưu {self._current_image_path.name}.", 2500)
             return True
-        items = self._canvas.box_items()
+
         unclassified = [b for b in items if b.confirmed and not b.class_name]
         if unclassified:
             resp = QMessageBox.warning(
@@ -1564,7 +1590,10 @@ class MainWindow(QMainWindow):
         detector = self._ensure_auto_detector()
         if detector is None:
             return
-        targets = [p for p in self._images if not yolo_io.has_label(p)]
+
+        targets = self._choose_auto_detect_batch_targets()
+        if targets is None:
+            return
         if not targets:
             QMessageBox.information(
                 self, "Không có ảnh cần xử lý", "Mọi ảnh trong thư mục đã có nhãn (.txt)."
@@ -1590,6 +1619,33 @@ class MainWindow(QMainWindow):
         worker.finishedBatch.connect(lambda done, skipped: self._on_auto_detect_batch_finished(done, skipped, targets))
         progress.canceled.connect(worker.cancel)
         worker.start()
+
+    def _choose_auto_detect_batch_targets(self) -> list[Path] | None:
+        """Ask whether batch auto-detect should cover only images without a
+        saved .txt yet, or every image in the directory (e.g. to re-run
+        after changing conf/IoU, or to regenerate suggestions for images
+        whose .txt turned out empty). Returns None if the user cancelled."""
+        unlabeled = [p for p in self._images if not yolo_io.has_label(p)]
+
+        box = QMessageBox(self)
+        box.setWindowTitle("Auto-detect hàng loạt")
+        box.setText("Chạy auto-detect cho ảnh nào trong thư mục?")
+        unlabeled_btn = box.addButton(
+            f"Chỉ ảnh chưa lưu ({len(unlabeled)})", QMessageBox.ButtonRole.AcceptRole
+        )
+        all_btn = box.addButton(
+            f"Toàn bộ thư mục ({len(self._images)})", QMessageBox.ButtonRole.AcceptRole
+        )
+        box.addButton("Hủy", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(unlabeled_btn)
+        box.exec()
+
+        clicked = box.clickedButton()
+        if clicked is unlabeled_btn:
+            return unlabeled
+        if clicked is all_btn:
+            return list(self._images)
+        return None
 
     def _on_auto_detect_batch_progress(self, done: int, total: int, filename: str) -> None:
         if self._auto_detect_progress is None:
@@ -1644,9 +1700,20 @@ class MainWindow(QMainWindow):
                 return True
 
             ctrl_held = bool(modifiers & Qt.KeyboardModifier.ControlModifier)
+            shift_held = bool(modifiers & Qt.KeyboardModifier.ShiftModifier)
             other_modifiers_held = bool(
                 modifiers & (Qt.KeyboardModifier.AltModifier | Qt.KeyboardModifier.MetaModifier)
             )
+
+            # Shift+D runs auto-detect on the current image -- guarded like
+            # Shift+Delete above so it doesn't fire while typing "D" into a
+            # metadata field.
+            if key == Qt.Key.Key_D and shift_held and not ctrl_held and not other_modifiers_held:
+                if QApplication.activeModalWidget() is None and not isinstance(
+                    focus, (QLineEdit, QTextEdit)
+                ):
+                    self._run_auto_detect_current()
+                    return True
 
             # `hand` has no color, so it keeps its own Ctrl+H shortcut --
             # none of the 7 role letters is free for it (H is "horse").

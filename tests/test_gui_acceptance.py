@@ -159,7 +159,7 @@ def test_ctrl_h_assigns_hand(main_window, labelimg_dataset):
     assert box.class_name == "hand"
 
 
-def test_save_round_trip_and_suggestions_excluded(main_window, labelimg_dataset):
+def test_save_round_trip_and_suggestions_excluded(main_window, labelimg_dataset, monkeypatch):
     main_window._open_directory(labelimg_dataset)
     assert main_window._current_image_path.name == "0005.jpg"
 
@@ -172,11 +172,38 @@ def test_save_round_trip_and_suggestions_excluded(main_window, labelimg_dataset)
     assert len(saved) == 1
     assert saved[0].class_id == main_window._classes.index("red_cannon")
 
-    # An unconfirmed suggestion must never make it into the saved .txt.
+    # An unconfirmed suggestion must never make it into the saved .txt --
+    # saving past the "you still have unconfirmed suggestions" warning
+    # (answered here as "save anyway") must still exclude it.
     main_window._canvas.add_box_item(QRectF(200, 200, 30, 30), class_name=None, confirmed=False)
+    monkeypatch.setattr(
+        QMessageBox, "warning", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Save)
+    )
     main_window._save_current_image()
     saved_again = yolo_io.load_boxes(labelimg_dataset / "0005.jpg")
     assert len(saved_again) == 1
+
+
+def test_saving_with_unconfirmed_suggestions_warns_first(main_window, labelimg_dataset, monkeypatch):
+    # Regression test: silently saving over unconfirmed suggestions used to
+    # look like "Save does nothing" (nothing gets written for them) or,
+    # worse, overwrite a previously-correct .txt with an empty one if none
+    # of the boxes on screen happened to be confirmed yet.
+    main_window._open_directory(labelimg_dataset)
+    assert main_window._current_image_path.name == "0005.jpg"
+    main_window._canvas.add_box_item(QRectF(50, 50, 40, 40), class_name="red_cannon", confirmed=False)
+
+    warned = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        staticmethod(lambda *a, **k: (warned.append(True), QMessageBox.StandardButton.Cancel)[1]),
+    )
+    result = main_window._save_current_image()
+
+    assert warned  # the user was actually told about the unconfirmed box
+    assert result is False
+    assert not yolo_io.has_label(labelimg_dataset / "0005.jpg")  # cancelling writes nothing
 
 
 def test_resume_advances_after_labeling_a_fresh_window(qapp, isolated_settings, labelimg_dataset):
