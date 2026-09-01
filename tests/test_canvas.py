@@ -1,5 +1,5 @@
 from PySide6.QtCore import QEvent, QPointF, QRectF, Qt
-from PySide6.QtGui import QKeyEvent, QPainter, QPixmap
+from PySide6.QtGui import QKeyEvent, QPainter, QPixmap, QTransform
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
@@ -123,6 +123,62 @@ def test_corner_hotkey_maps_the_actual_pointer_through_zoom_and_pan():
         assert abs(observed[0].y() - target.y()) <= 1.0
     finally:
         canvas.close()
+
+
+# ---------------------------------------------------------------------
+# board_region z-ordering: it spans nearly the whole board and overlaps
+# every piece box, so it must never steal a click meant for a piece
+# underneath it (yeu_cau_tu_app_ky_nhan.md section 1).
+# ---------------------------------------------------------------------
+def test_board_region_box_defaults_behind_piece_boxes():
+    _ensure_qapp()
+    board = BoxItem(QRectF(0, 0, 200, 200), "board_region", confirmed=True, image_bounds=QRectF(0, 0, 200, 200))
+    piece = BoxItem(QRectF(50, 50, 20, 20), "black_pawn", confirmed=True, image_bounds=QRectF(0, 0, 200, 200))
+    assert board.zValue() < piece.zValue()
+
+
+def test_board_region_box_moves_in_front_only_while_selected():
+    # Selected board_region still needs its own resize handles reachable,
+    # even where they sit under a piece box -- so it comes forward while
+    # selected, and drops back behind pieces the instant it's deselected.
+    _ensure_qapp()
+    board = BoxItem(QRectF(0, 0, 200, 200), "board_region", confirmed=True, image_bounds=QRectF(0, 0, 200, 200))
+    piece = BoxItem(QRectF(50, 50, 20, 20), "black_pawn", confirmed=True, image_bounds=QRectF(0, 0, 200, 200))
+
+    board.setSelected(True)
+    assert board.zValue() > piece.zValue()
+
+    board.setSelected(False)
+    assert board.zValue() < piece.zValue()
+
+
+def test_reassigning_a_box_to_or_from_board_region_updates_its_z_value():
+    _ensure_qapp()
+    box = BoxItem(QRectF(0, 0, 40, 40), "black_pawn", confirmed=True, image_bounds=QRectF(0, 0, 200, 200))
+    default_z = box.zValue()
+
+    box.class_name = "board_region"
+    assert box.zValue() < default_z
+
+    box.class_name = "black_pawn"
+    assert box.zValue() == default_z
+
+
+def test_clicking_a_piece_under_the_board_region_box_hits_the_piece_not_the_region():
+    # Regression test for the reported bug: a giant unselected board_region
+    # box covering the whole board intercepted clicks meant for the piece
+    # underneath it.
+    _ensure_qapp()
+    canvas = ImageCanvas()
+    pixmap = QPixmap(200, 200)
+    pixmap.fill()
+    canvas.load_image(pixmap)
+
+    canvas.add_box_item(QRectF(0, 0, 200, 200), class_name="board_region", confirmed=True)
+    piece = canvas.add_box_item(QRectF(80, 80, 20, 20), class_name="black_pawn", confirmed=True)
+
+    hit = canvas._scene.itemAt(QPointF(90, 90), QTransform())
+    assert hit is piece
 
 
 def test_corner_hotkey_outside_the_source_image_is_ignored_and_zero_requests_clear():

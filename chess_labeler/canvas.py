@@ -23,11 +23,23 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .key_shortcuts import display_label_for_class
+from .key_shortcuts import BOARD_REGION_CLASS, display_label_for_class
 
 HANDLE_SCREEN_SIZE = 9.0  # px, kept constant on screen regardless of zoom
 LABEL_FONT_SCREEN_PX = 9.0  # class-label glyph size, kept constant on screen
 LABEL_PADDING_SCREEN_PX = 2.0
+
+# `board_region` spans nearly the whole board and overlaps every piece box on
+# top of it -- see yeu_cau_tu_app_ky_nhan.md section 1. Left at the default
+# z-value it would sit above (or below, depending on add order) piece boxes
+# arbitrarily, so a click meant for a piece could hit the region box instead.
+# Keep it behind everything else while it isn't selected (a click always
+# reaches the smaller piece box first), but bring it in front while selected
+# so its own resize handles stay reachable even where they overlap a piece
+# box -- see BoxItem._sync_z_value.
+_DEFAULT_BOX_Z_VALUE = 0.0
+_UNSELECTED_BOARD_REGION_Z_VALUE = -0.5
+_SELECTED_BOARD_REGION_Z_VALUE = 1.0
 MIN_DRAG_PX = 3
 CORNER_MARKER_SCREEN_RADIUS = 3.0
 
@@ -116,7 +128,7 @@ class BoxItem(QGraphicsRectItem):
 
     def __init__(self, rect: QRectF, class_name: str | None, confirmed: bool, image_bounds: QRectF):
         super().__init__(rect)
-        self.class_name = class_name
+        self._class_name: str | None = None
         self.confirmed = confirmed
         self.image_bounds = image_bounds
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
@@ -130,6 +142,30 @@ class BoxItem(QGraphicsRectItem):
         # Set by ImageCanvas so undo snapshots can be captured around drags.
         self.on_drag_begin: Callable[[], None] | None = None
         self.on_drag_end: Callable[[bool], None] | None = None
+
+        self.class_name = class_name  # through the property, to set the initial z-value
+
+    @property
+    def class_name(self) -> str | None:
+        return self._class_name
+
+    @class_name.setter
+    def class_name(self, value: str | None) -> None:
+        self._class_name = value
+        self._sync_z_value()
+
+    def itemChange(self, change, value):  # noqa: N802 (Qt override)
+        if change == QGraphicsItem.GraphicsItemChange.ItemSelectedHasChanged:
+            self._sync_z_value()
+        return super().itemChange(change, value)
+
+    def _sync_z_value(self) -> None:
+        if self._class_name != BOARD_REGION_CLASS:
+            self.setZValue(_DEFAULT_BOX_Z_VALUE)
+        elif self.isSelected():
+            self.setZValue(_SELECTED_BOARD_REGION_Z_VALUE)
+        else:
+            self.setZValue(_UNSELECTED_BOARD_REGION_Z_VALUE)
 
     def handle_scene_size(self) -> float:
         scene = self.scene()
