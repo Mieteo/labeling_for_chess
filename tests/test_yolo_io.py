@@ -3,13 +3,23 @@ from pathlib import Path
 import pytest
 
 from chess_labeler import yolo_io
-from chess_labeler.constants import DEFAULT_CLASSES
+from chess_labeler.constants import DEFAULT_CLASSES, DEFAULT_CLASSES_DIGITAL
 
 
 def test_load_or_create_classes_creates_default(tmp_path: Path):
     classes = yolo_io.load_or_create_classes(tmp_path)
     assert classes == DEFAULT_CLASSES
     assert (tmp_path / "classes.txt").exists()
+
+
+def test_load_or_create_classes_creates_digital_default_with_board_region(tmp_path: Path):
+    classes = yolo_io.load_or_create_classes(tmp_path, DEFAULT_CLASSES_DIGITAL)
+    assert classes == DEFAULT_CLASSES_DIGITAL
+    assert len(classes) == 16
+    assert classes[:15] == DEFAULT_CLASSES
+    assert classes[15] == "board_region"
+    on_disk = (tmp_path / "classes.txt").read_text(encoding="utf-8").strip("\n").split("\n")
+    assert on_disk == DEFAULT_CLASSES_DIGITAL
 
 
 def test_load_or_create_classes_preserves_existing_order(tmp_path: Path):

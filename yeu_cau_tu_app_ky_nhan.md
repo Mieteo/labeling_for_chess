@@ -35,14 +35,34 @@ dữ liệu.
   biệt hoàn toàn khỏi thư mục ảnh Physical hiện có — đúng nguyên tắc "1 thư
   mục phẳng" ở mục 1.1 tài liệu gốc, chỉ là 2 thư mục độc lập, mỗi thư mục có
   `classes.txt` + các `<tên>.txt` riêng của nó.
-- **Không cần đổi danh sách 15 lớp** — dùng nguyên `classes.txt` 15 dòng hiện
-  có (mục 1.2 tài liệu gốc: `red_king` … `black_pawn`, `hand`). Lý do giữ
-  nguyên thay vì rút gọn: đơn giản hoá (1 schema class duy nhất cho toàn bộ
-  tool, script `tool/unify_scanner_labels.py` phía app gộp nhãn theo *tên*
-  lớp nên không phát sinh vấn đề nếu 1 lớp không dùng tới). Lớp `hand` gần
-  như sẽ luôn rỗng với ảnh Digital (không có tay người che ảnh chụp màn
-  hình) — đó là kết quả bình thường, không phải lỗi, không cần xử lý gì
-  thêm.
+- **`classes.txt` của thư mục Digital có 16 dòng, không phải 15** — 14 dòng
+  đầu **giữ nguyên y hệt** 14 lớp quân + màu của Physical (mục 1.2 tài liệu
+  gốc, thứ tự không đổi: `red_king` … `black_pawn`), dòng 15 (index 14) vẫn
+  là `hand` giữ nguyên vị trí cho nhất quán schema (sẽ gần như luôn rỗng với
+  ảnh Digital — không có tay người che ảnh chụp màn hình, đó là bình thường,
+  không phải lỗi), và **thêm dòng 16 (index 15) là lớp mới `board_region`**.
+  Vì đây là 2 thư mục độc lập, mỗi thư mục có `classes.txt` riêng (mục 1.1
+  tài liệu gốc), thêm 1 dòng cho riêng thư mục Digital không ảnh hưởng gì
+  tới `classes.txt` 15 dòng đang dùng cho Physical.
+- **Vì sao cần `board_region` (quyết định 28/08/2026, không phải tuỳ chọn):**
+  đây là 1 box lỏng bao quanh **toàn bộ khung 9x10** (không phải 4 điểm góc,
+  không phải quân cờ) — model Digital hiện tại phát ra đúng lớp này (kênh
+  `'0'`, xem mục 3.2), và pipeline phía app dùng nó làm tín hiệu phân xử khi
+  các quân phát hiện được không trải đủ rộng để tự xác định lưới 9x10 duy
+  nhất (`DetectionGridEstimator._place`, xem `docs/phase5_digital_model_retrain_plan.md`
+  mục "Dữ liệu" phía repo app để biết chi tiết kỹ thuật). Model mới train lại
+  cũng cần học lớp này, nên dữ liệu gán nhãn phải có nó **ngay từ đầu** — bổ
+  sung sau khi đã gán xong hàng trăm ảnh sẽ tốn công gấp đôi.
+  - Mỗi ảnh gán **0 hoặc 1 box `board_region`** (0 nếu bàn bị cắt khỏi khung
+    hình chụp) — khác quân cờ, không có chuyện nhiều box cùng lớp này trên 1
+    ảnh.
+  - Vẽ **sát khung ngoài của lưới 9x10** (chạm đường kẻ dọc/ngang ngoài cùng
+    của bàn), **không** tính phần UI xung quanh bàn (thanh công cụ, khung
+    ảnh đại diện quân đã ăn, đồng hồ, v.v. của phần mềm cờ tướng).
+  - Cần 1 phím tắt riêng để gán nhanh (không dùng chung cơ chế 1-phím vai
+    trò ở mục 3 tài liệu gốc vì `board_region` không phải quân, không có
+    màu/vai trò) — đề xuất `Ctrl+B`, không trùng với bất kỳ phím tắt nào đã
+    liệt kê ở mục 3 hoặc `Ctrl+H` (hand) của tài liệu gốc.
 
 ## 2. Circle-detect (mục 4 tài liệu gốc) không áp dụng cho Digital — cần ẩn, không cần xoá
 
@@ -109,11 +129,11 @@ Digital, các giới hạn khác của mục 7 gốc vẫn giữ nguyên.
 ### 3.2. Bảng ánh xạ lớp — BẮT BUỘC đọc kỹ, rủi ro "sai lặng lẽ" cao nhất của tính năng này
 
 Thứ tự 15 lớp của **model** (dùng ký hiệu FEN: chữ thường = quân đen, chữ hoa
-= quân đỏ) **khác hoàn toàn** thứ tự 15 lớp của **`classes.txt`** trong
-`labeling_for_chess` (mục 1.2 tài liệu gốc). Nếu map theo index thay vì theo
-tên, mọi gợi ý sinh ra sẽ **sai lớp một cách âm thầm** — đúng loại lỗi mà
-tài liệu gốc mục 1.4 đã cảnh báo cho trường hợp classes.txt, giờ áp dụng y
-hệt cho bảng ánh xạ model→tool này:
+= quân đỏ) **khác hoàn toàn** thứ tự 16 lớp của **`classes.txt`** dùng cho
+thư mục Digital (mục 1 ở trên). Nếu map theo index thay vì theo tên, mọi gợi
+ý sinh ra sẽ **sai lớp một cách âm thầm** — đúng loại lỗi mà tài liệu gốc mục
+1.4 đã cảnh báo cho trường hợp classes.txt, giờ áp dụng y hệt cho bảng ánh xạ
+model→tool này:
 
 | Index model | Ký tự | Ý nghĩa | Tên lớp trong `classes.txt` của tool |
 | --- | --- | --- | --- |
@@ -131,7 +151,7 @@ hệt cho bảng ánh xạ model→tool này:
 | 11 | `B` | tượng đỏ | `red_elephant` |
 | 12 | `C` | pháo đỏ | `red_cannon` |
 | 13 | `P` | tốt đỏ | `red_pawn` |
-| 14 | `0` | không phải quân cờ (vùng bàn cờ, nội bộ model dùng để định vị bàn) | **Không map sang lớp nào cả — loại bỏ hoàn toàn khỏi danh sách gợi ý**, không phải `hand`, không phải lớp nào khác. |
+| 14 | `0` | vùng bàn cờ (không phải quân cờ, model dùng để định vị lưới 9x10) | `board_region` (lớp thứ 16, index 15, của `classes.txt` Digital — **không phải** `hand`) |
 
 Danh sách gốc (tham chiếu để đối chiếu khi cần, lấy từ
 `lib/src/core/scanner/xiangqi_pwa_baseline.dart` phía app,
@@ -174,7 +194,13 @@ Phase 5 khác của app, theo `docs/phase5_scanner_model_independence.md`.
    nguyên lớp model gán), **sửa lớp** (gõ phím tắt 1-phím sẵn có ở mục 3 tài
    liệu gốc để đổi vai trò/màu — dự kiến thao tác hay dùng nhất, vì model
    yếu nhất ở phân loại vai trò), **sửa vị trí/kích thước box** (kéo cạnh/tâm
-   như box thường vẽ tay), hoặc **xoá** (false positive).
+   như box thường vẽ tay), hoặc **xoá** (false positive). Gợi ý mang lớp `'0'`
+   của model tự động map thành gợi ý `board_region` (mục 3.2) — xác nhận
+   bằng `Ctrl+B` (mục 1), không dùng phím vai trò vì đây không phải quân cờ.
+   Model comment sẵn có trong app ghi nhận box `'0'` này "loose" (không
+   chính xác cao) — người dùng nên **chỉnh lại vị trí/kích thước** box này
+   sát khung 9x10 thật trước khi xác nhận, thay vì giữ nguyên gợi ý thô, vì
+   đây sẽ là nhãn huấn luyện, cần chính xác hơn output suy luận của model cũ.
 4. **TUYỆT ĐỐI không tự ghi gợi ý chưa xác nhận vào `.txt` khi lưu** — giữ
    đúng bất biến bắt buộc ở mục 4.5 tài liệu gốc, áp dụng y hệt cho auto-detect.
 5. Nên có action "chạy lại auto-detect cho ảnh này" (ví dụ sau khi đổi

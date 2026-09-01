@@ -43,10 +43,12 @@ from .canvas import BoxItem, CanvasMode, ImageCanvas
 from .constants import (
     DEFAULT_AUTO_DETECT_CONF_THRESHOLD,
     DEFAULT_AUTO_DETECT_IOU_THRESHOLD,
+    DEFAULT_CLASSES,
+    DEFAULT_CLASSES_DIGITAL,
     DEFAULT_RADIUS_TOLERANCE_PCT,
 )
 from .imaging import read_image_bgr
-from .key_shortcuts import HAND_CLASS, resolve_piece_class
+from .key_shortcuts import BOARD_REGION_CLASS, HAND_CLASS, resolve_piece_class
 from .metadata_panel import MetadataPanel
 from .panels import BoxListPanel, FileListPanel
 
@@ -470,7 +472,20 @@ class MainWindow(QMainWindow):
         self._cancel_running_auto_detect_batch()
         self._image_dir = directory
         self._app_settings.setValue(_LAST_DIR_SETTINGS_KEY, str(directory))
-        self._classes = yolo_io.load_or_create_classes(directory)
+
+        state = session.load_session(directory)
+        # Explicit per-folder override wins; otherwise infer from the
+        # directory name. Computed early (before classes.txt) so a brand-new
+        # Digital directory gets the 16-class default (with `board_region`)
+        # instead of the 15-class Physical one -- see
+        # yeu_cau_tu_app_ky_nhan.md section 1. Not saved here -- the next
+        # _save_session_state() call (at the end of _load_image_at below)
+        # persists it together with the correct last_image for THIS
+        # directory.
+        mode = state.image_mode if state.image_mode is not None else image_mode.infer_mode_from_dirname(directory)
+
+        default_classes = DEFAULT_CLASSES_DIGITAL if mode == image_mode.DIGITAL else DEFAULT_CLASSES
+        self._classes = yolo_io.load_or_create_classes(directory, default_classes)
         self._images = yolo_io.list_images(directory)
 
         self._class_combo.blockSignals(True)
@@ -481,7 +496,6 @@ class MainWindow(QMainWindow):
 
         self._file_list_panel.set_images(self._images)
 
-        state = session.load_session(directory)
         if state.last_radius_px:
             self._reference_radius_px = state.last_radius_px
             self._radius_spin.blockSignals(True)
@@ -496,12 +510,6 @@ class MainWindow(QMainWindow):
         self._recent_device_models = list(state.recent_device_models)
         self._recent_capture_groups = list(state.recent_capture_groups)
         self._metadata_panel.set_recent_values(self._recent_device_models, self._recent_capture_groups)
-
-        # Explicit per-folder override wins; otherwise infer from the
-        # directory name. Not saved here -- the next _save_session_state()
-        # call (at the end of _load_image_at below) persists it together
-        # with the correct last_image for THIS directory.
-        mode = state.image_mode if state.image_mode is not None else image_mode.infer_mode_from_dirname(directory)
         self._apply_image_mode(mode)
 
         if not self._images:
@@ -1646,6 +1654,12 @@ class MainWindow(QMainWindow):
                 self._assign_class_to_selected(HAND_CLASS)
                 return True
 
+            # `board_region` (Digital only) is colorless too and gets its
+            # own Ctrl+B shortcut -- see yeu_cau_tu_app_ky_nhan.md section 1.
+            if key == Qt.Key.Key_B and ctrl_held and not other_modifiers_held:
+                self._assign_class_to_selected(BOARD_REGION_CLASS)
+                return True
+
             if key in _ROLE_KEY_CODES and not ctrl_held and not other_modifiers_held:
                 # Case carries the color: lowercase = black, UPPERCASE
                 # (Caps Lock or Shift) = red. event.text() reflects the
@@ -1668,7 +1682,15 @@ class MainWindow(QMainWindow):
         box.update()
         self._mark_dirty()
         self._refresh_box_list()
-        self.statusBar().showMessage(f"Đã gán lớp: {class_name}", 1200)
+        if class_name == BOARD_REGION_CLASS:
+            # This will be a training label, not just a passthrough of the
+            # model's own loose channel-'0' box -- see
+            # yeu_cau_tu_app_ky_nhan.md section 3.4 item 3.
+            self.statusBar().showMessage(
+                "Đã gán lớp: board_region -- nhớ chỉnh khít sát khung 9x10 trước khi lưu.", 4000
+            )
+        else:
+            self.statusBar().showMessage(f"Đã gán lớp: {class_name}", 1200)
 
     # ------------------------------------------------------------------
     def showEvent(self, event) -> None:  # noqa: N802

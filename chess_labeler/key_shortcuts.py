@@ -12,7 +12,8 @@ chord:
 The letter's case selects color: lowercase = black, UPPERCASE (typed with
 Caps Lock or Shift) = red. `hand` has no color and keeps its own shortcut,
 Ctrl+H -- none of the 7 letters above is free for it (H is already
-"horse").
+"horse"). `board_region` (Digital directories only, see
+yeu_cau_tu_app_ky_nhan.md section 1) is colorless too and keeps Ctrl+B.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ ROLE_BY_LETTER = {
 }
 
 HAND_CLASS = "hand"
+BOARD_REGION_CLASS = "board_region"
 
 
 def resolve_piece_class(letter: str, is_red: bool) -> str | None:
@@ -49,23 +51,28 @@ def display_label_for_class(class_name: str | None) -> str:
     """Short glyph drawn inside a box to show its assigned class: the same
     lowercase role letter used for the keyboard shortcut (color alone
     conveys red/black, so the glyph itself never needs to be uppercase),
-    or the literal word "hand" for the colorless occlusion class. Empty
-    string for an unassigned or unrecognized class name."""
+    the literal word "hand" for the colorless occlusion class, or "board"
+    for the colorless `board_region` class (Digital only). Empty string for
+    an unassigned or unrecognized class name."""
     if not class_name:
         return ""
     if class_name == HAND_CLASS:
         return HAND_CLASS
+    if class_name == BOARD_REGION_CLASS:
+        return "board"
     _, _, role = class_name.partition("_")
     return _LETTER_BY_ROLE.get(role, "")
 
 
 # Display order for the "boxes in this image" panel: black pieces first (in
-# this fixed role order), then red, then the colorless `hand` class, with
-# unassigned boxes sorted separately (below all of these -- see panels.py).
+# this fixed role order), then red, then the colorless `hand` class, then the
+# colorless `board_region` class (Digital only), with unassigned boxes sorted
+# separately (below all of these -- see panels.py).
 CLASS_DISPLAY_ORDER: list[str] = [
     "black_pawn", "black_rook", "black_cannon", "black_horse",
     "black_elephant", "black_advisor", "black_king",
     "red_pawn", "red_rook", "red_cannon", "red_horse",
     "red_elephant", "red_advisor", "red_king",
     HAND_CLASS,
+    BOARD_REGION_CLASS,
 ]

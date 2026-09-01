@@ -55,6 +55,7 @@ _PALETTE_BY_NAME = {
     "black_rook": QColor(48, 63, 159),
     "black_pawn": QColor(92, 107, 192),
     "hand": QColor(251, 192, 45),
+    "board_region": QColor(0, 150, 136),
 }
 _FALLBACK_COLORS = [QColor(h) for h in ("#8e24aa", "#3949ab", "#00897b", "#7cb342", "#fdd835")]
 _UNASSIGNED_COLOR = QColor(158, 158, 158)
@@ -74,9 +75,9 @@ _LABEL_TEXT_BLACK = QColor(0, 0, 0)
 
 def _label_text_color(class_name: str | None) -> QColor:
     """Text color for the in-box class glyph: red for a red_* class, black
-    otherwise (black pieces, `hand`, or anything unrecognized) -- color
-    alone needs to carry red/black since the glyph itself is always
-    lowercase (see key_shortcuts.display_label_for_class)."""
+    otherwise (black pieces, `hand`, `board_region`, or anything
+    unrecognized) -- color alone needs to carry red/black since the glyph
+    itself is always lowercase (see key_shortcuts.display_label_for_class)."""
     if class_name and class_name.startswith("red_"):
         return _LABEL_TEXT_RED
     return _LABEL_TEXT_BLACK

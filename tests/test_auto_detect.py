@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from chess_labeler import auto_detect
-from chess_labeler.constants import AUTO_DETECT_INPUT_SIZE, DEFAULT_CLASSES
+from chess_labeler.constants import AUTO_DETECT_INPUT_SIZE, DEFAULT_CLASSES_DIGITAL
 
 # A real model dropped locally for manual verification against the actual
 # app model (see yeu_cau_tu_app_ky_nhan.md section 3.1). Not part of the
@@ -22,15 +22,17 @@ def test_model_label_order_matches_confirmed_app_source():
     )
 
 
-def test_class_mapping_covers_every_piece_and_excludes_non_piece_channel():
-    # Every model label except the non-piece "0" channel must map to a
-    # class name, and that set must be exactly this tool's 14 piece classes
-    # (i.e. classes.txt minus `hand`) -- mapping by name, never by index.
-    assert auto_detect.NON_PIECE_MODEL_LABEL not in auto_detect.MODEL_LABEL_TO_CLASS_NAME
+def test_class_mapping_covers_every_piece_plus_board_region():
+    # Every one of the model's 15 labels (14 pieces + the "0" board-region
+    # channel) must map to a class name, and that set must be exactly this
+    # tool's 15 Digital classes minus `hand` -- mapping by name, never by
+    # index.
+    assert auto_detect.BOARD_REGION_MODEL_LABEL in auto_detect.MODEL_LABEL_TO_CLASS_NAME
+    assert auto_detect.MODEL_LABEL_TO_CLASS_NAME[auto_detect.BOARD_REGION_MODEL_LABEL] == "board_region"
     mapped_classes = set(auto_detect.MODEL_LABEL_TO_CLASS_NAME.values())
-    expected_piece_classes = set(DEFAULT_CLASSES) - {"hand"}
-    assert mapped_classes == expected_piece_classes
-    assert len(auto_detect.MODEL_LABEL_TO_CLASS_NAME) == 14
+    expected_classes = set(DEFAULT_CLASSES_DIGITAL) - {"hand"}
+    assert mapped_classes == expected_classes
+    assert len(auto_detect.MODEL_LABEL_TO_CLASS_NAME) == 15
 
 
 def test_class_mapping_matches_documented_table():
@@ -39,6 +41,7 @@ def test_class_mapping_matches_documented_table():
         "r": "black_rook", "c": "black_cannon", "p": "black_pawn",
         "R": "red_rook", "N": "red_horse", "A": "red_advisor", "K": "red_king",
         "B": "red_elephant", "C": "red_cannon", "P": "red_pawn",
+        "0": "board_region",
     }
     assert auto_detect.MODEL_LABEL_TO_CLASS_NAME == expected
 
@@ -56,8 +59,15 @@ def test_un_letterbox_maps_class_by_name_not_index():
     assert detection.class_name == "black_horse"
 
 
-def test_un_letterbox_drops_non_piece_channel():
+def test_un_letterbox_maps_board_region_channel():
     b = _raw_box(cx=320, cy=320, w=100, h=100, class_idx=14, score=0.99)
+    detection = auto_detect._un_letterbox(b, scale=1.0, pad_x=0.0, pad_y=0.0, img_w=640, img_h=640)
+    assert detection is not None
+    assert detection.class_name == "board_region"
+
+
+def test_un_letterbox_drops_out_of_range_class_idx():
+    b = _raw_box(cx=320, cy=320, w=100, h=100, class_idx=99, score=0.99)
     assert auto_detect._un_letterbox(b, scale=1.0, pad_x=0.0, pad_y=0.0, img_w=640, img_h=640) is None
 
 
@@ -117,7 +127,7 @@ def test_decode_and_nms_per_class_deduplicates_overlaps_and_filters_threshold():
 
     set_anchor(0, cx=320, cy=320, w=40, h=60, class_idx=0, score=0.9)  # kept (best of the pair)
     set_anchor(1, cx=322, cy=321, w=40, h=60, class_idx=0, score=0.6)  # near-duplicate -> NMS'd away
-    set_anchor(2, cx=100, cy=100, w=200, h=200, class_idx=14, score=0.99)  # non-piece channel
+    set_anchor(2, cx=100, cy=100, w=200, h=200, class_idx=14, score=0.99)  # board-region channel
     set_anchor(3, cx=500, cy=500, w=20, h=20, class_idx=7, score=0.1)  # below conf threshold
     set_anchor(4, cx=500, cy=500, w=30, h=40, class_idx=7, score=0.8)  # kept, different class
 
@@ -131,9 +141,10 @@ def test_decode_and_nms_per_class_deduplicates_overlaps_and_filters_threshold():
     ]
 
     by_class = {d.class_name: d for d in detections}
-    assert set(by_class) == {"black_horse", "red_rook"}
+    assert set(by_class) == {"black_horse", "red_rook", "board_region"}
     assert by_class["black_horse"].score == pytest.approx(0.9)
     assert by_class["red_rook"].score == pytest.approx(0.8)
+    assert by_class["board_region"].score == pytest.approx(0.99)
 
 
 @pytest.mark.skipif(not _LOCAL_MODEL_PATH.exists(), reason="local .onnx model not present on this machine")
@@ -143,5 +154,5 @@ def test_real_model_smoke_run_returns_valid_class_names():
     detections = detector.detect(image_bgr)
     assert isinstance(detections, list)
     for d in detections:
-        assert d.class_name in DEFAULT_CLASSES
+        assert d.class_name in DEFAULT_CLASSES_DIGITAL
         assert d.class_name != "hand"

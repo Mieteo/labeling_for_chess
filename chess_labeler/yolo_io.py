@@ -85,9 +85,15 @@ def classes_path(image_dir: Path | str) -> Path:
     return Path(image_dir) / CLASSES_FILENAME
 
 
-def load_or_create_classes(image_dir: Path | str) -> list[str]:
+def load_or_create_classes(
+    image_dir: Path | str, default_classes: list[str] = DEFAULT_CLASSES
+) -> list[str]:
     """Load classes.txt if present (preserving its exact existing order),
-    otherwise create it from DEFAULT_CLASSES and return that default list.
+    otherwise create it from `default_classes` and return that default list.
+    Callers pass `constants.DEFAULT_CLASSES_DIGITAL` for a Digital directory
+    so a brand-new one gets the 16th `board_region` class from the start
+    (see yeu_cau_tu_app_ky_nhan.md section 1); the plain 15-class default
+    covers Physical directories.
 
     Never call this on a directory whose classes.txt you intend to keep
     untouched but do not want re-created -- it only writes when the file is
@@ -97,8 +103,8 @@ def load_or_create_classes(image_dir: Path | str) -> list[str]:
     if path.exists():
         text = path.read_text(encoding="utf-8")
         return text.strip("\n").split("\n") if text.strip("\n") else []
-    save_classes(image_dir, DEFAULT_CLASSES)
-    return list(DEFAULT_CLASSES)
+    save_classes(image_dir, default_classes)
+    return list(default_classes)
 
 
 def save_classes(image_dir: Path | str, classes: list[str]) -> None:

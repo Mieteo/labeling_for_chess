@@ -10,25 +10,27 @@ from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QListWidget, QList
 
 from . import metadata, yolo_io
 from .canvas import BoxItem, class_color
-from .key_shortcuts import CLASS_DISPLAY_ORDER, HAND_CLASS
+from .key_shortcuts import BOARD_REGION_CLASS, CLASS_DISPLAY_ORDER, HAND_CLASS
 
 _LABELED_COLOR = QColor(46, 125, 50)
 _UNLABELED_COLOR = QColor(130, 130, 130)
 
 # Two columns instead of one flat list: left = black pieces + not-yet-labeled
-# boxes, right = red pieces + the colorless `hand` class. Each column keeps
-# the same fixed mnemonic sub-order as before (see CLASS_DISPLAY_ORDER),
-# with its "leftover" bucket (unassigned / hand) sorted last within it.
+# boxes, right = red pieces + the colorless `hand` and `board_region`
+# classes. Each column keeps the same fixed mnemonic sub-order as before (see
+# CLASS_DISPLAY_ORDER), with its "leftover" bucket (unassigned / hand /
+# board_region) sorted last within it.
 _BLACK_COLUMN_ORDER = CLASS_DISPLAY_ORDER[:7]
 _RED_COLUMN_ORDER = CLASS_DISPLAY_ORDER[7:14]
 _BLACK_SORT_INDEX = {name: i for i, name in enumerate(_BLACK_COLUMN_ORDER)}
 _RED_SORT_INDEX = {name: i for i, name in enumerate(_RED_COLUMN_ORDER)}
 _BLACK_UNASSIGNED_SORT_INDEX = len(_BLACK_COLUMN_ORDER)
 _RED_HAND_SORT_INDEX = len(_RED_COLUMN_ORDER)
+_RED_BOARD_REGION_SORT_INDEX = _RED_HAND_SORT_INDEX + 1
 
 
 def _is_red_column(class_name: str | None) -> bool:
-    return class_name == HAND_CLASS or class_name in _RED_SORT_INDEX
+    return class_name in (HAND_CLASS, BOARD_REGION_CLASS) or class_name in _RED_SORT_INDEX
 
 
 def _black_sort_key(box: BoxItem) -> int:
@@ -38,7 +40,9 @@ def _black_sort_key(box: BoxItem) -> int:
 def _red_sort_key(box: BoxItem) -> int:
     if box.class_name == HAND_CLASS:
         return _RED_HAND_SORT_INDEX
-    return _RED_SORT_INDEX.get(box.class_name, _RED_HAND_SORT_INDEX)
+    if box.class_name == BOARD_REGION_CLASS:
+        return _RED_BOARD_REGION_SORT_INDEX
+    return _RED_SORT_INDEX.get(box.class_name, _RED_BOARD_REGION_SORT_INDEX)
 
 
 class FileListPanel(QWidget):
@@ -192,8 +196,9 @@ class FileListPanel(QWidget):
 class BoxListPanel(QWidget):
     """Lists every box drawn on the current image (class name, suggestion
     marker), split into two side-by-side columns -- left for black pieces
-    and not-yet-labeled boxes, right for red pieces and `hand` -- each
-    independently sorted (see the `_*_sort_key` functions above). Click
+    and not-yet-labeled boxes, right for red pieces, `hand`, and
+    `board_region` -- each independently sorted (see the `_*_sort_key`
+    functions above). Click
     highlights/selects the matching box on the canvas; only one column ever
     shows a highlighted row at a time, matching the single canvas selection.
     """

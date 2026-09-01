@@ -19,10 +19,12 @@ import pytest
 from PIL import Image
 from PySide6.QtCore import QEvent, QRectF, QSettings, Qt
 from PySide6.QtGui import QKeyEvent
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from chess_labeler import auto_detect, image_mode, suggestions, yolo_io
 from chess_labeler.auto_detect_worker import AutoDetectBatchWorker
+from chess_labeler.constants import DEFAULT_CLASSES, DEFAULT_CLASSES_DIGITAL
 from chess_labeler.main_window import MainWindow
 
 
@@ -265,3 +267,39 @@ def test_batch_worker_cancel_stops_early(tmp_path):
     # Cancelled after the 2nd image's progress tick (index 1) -- fewer than
     # all 3 images should have been processed.
     assert sum(suggestions.has_pending_suggestions(p) for p in paths) < 3
+
+
+# ---------------------------------------------------------------------
+# classes.txt schema fork: Digital gets the extra `board_region` 16th
+# class, Physical keeps the plain 15 (yeu_cau_tu_app_ky_nhan.md section 1)
+# ---------------------------------------------------------------------
+def test_opening_fresh_digital_directory_creates_16_class_classes_txt(main_window, tmp_path):
+    d = _digital_dataset(tmp_path)
+    main_window._open_directory(d)
+    assert main_window._classes == DEFAULT_CLASSES_DIGITAL
+    assert "board_region" in main_window._classes
+    on_disk = (d / "classes.txt").read_text(encoding="utf-8").strip("\n").split("\n")
+    assert on_disk == DEFAULT_CLASSES_DIGITAL
+
+
+def test_opening_fresh_physical_directory_still_creates_15_class_classes_txt(main_window, tmp_path):
+    d = tmp_path / "chessImgFresh"
+    d.mkdir()
+    Image.new("RGB", (640, 480), (220, 220, 220)).save(d / "p0001.jpg")
+    main_window._open_directory(d)
+    assert main_window._classes == DEFAULT_CLASSES
+    assert "board_region" not in main_window._classes
+
+
+# ---------------------------------------------------------------------
+# Ctrl+B assigns board_region, the colorless 16th Digital-only class
+# (yeu_cau_tu_app_ky_nhan.md section 1)
+# ---------------------------------------------------------------------
+def test_ctrl_b_assigns_board_region(main_window, tmp_path):
+    main_window._open_directory(_digital_dataset(tmp_path))
+    box = main_window._canvas.add_box_item(QRectF(10, 10, 20, 20), class_name=None, confirmed=False, select=True)
+
+    QTest.keyClick(main_window._canvas, Qt.Key.Key_B, Qt.KeyboardModifier.ControlModifier)
+
+    assert box.class_name == "board_region"
+    assert box.confirmed is True

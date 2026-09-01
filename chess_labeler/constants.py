@@ -27,6 +27,12 @@ DEFAULT_CLASSES: list[str] = [
 
 HAND_CLASS_NAME = "hand"
 
+# Digital directories get one extra 16th class appended -- a loose box around
+# the whole 9x10 grid, used by the app's grid-placement fallback. See
+# yeu_cau_tu_app_ky_nhan.md section 1. Physical directories keep the 15
+# classes above, untouched.
+DEFAULT_CLASSES_DIGITAL: list[str] = DEFAULT_CLASSES + ["board_region"]
+
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png")
 
 CLASSES_FILENAME = "classes.txt"

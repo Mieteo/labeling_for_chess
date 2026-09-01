@@ -1,4 +1,5 @@
 from chess_labeler.key_shortcuts import (
+    BOARD_REGION_CLASS,
     CLASS_DISPLAY_ORDER,
     HAND_CLASS,
     ROLE_BY_LETTER,
@@ -55,6 +56,10 @@ def test_hand_class_constant():
     assert HAND_CLASS == "hand"
 
 
+def test_board_region_class_constant():
+    assert BOARD_REGION_CLASS == "board_region"
+
+
 def test_display_label_uses_lowercase_letter_regardless_of_color():
     assert display_label_for_class("black_rook") == "r"
     assert display_label_for_class("red_rook") == "r"
@@ -66,15 +71,19 @@ def test_display_label_for_hand_is_the_word_hand():
     assert display_label_for_class("hand") == "hand"
 
 
+def test_display_label_for_board_region_is_board():
+    assert display_label_for_class("board_region") == "board"
+
+
 def test_display_label_empty_for_unassigned_or_unknown():
     assert display_label_for_class(None) == ""
     assert display_label_for_class("") == ""
     assert display_label_for_class("not_a_real_class") == ""
 
 
-def test_class_display_order_has_all_15_classes_black_then_red_then_hand():
-    assert len(CLASS_DISPLAY_ORDER) == 15
-    assert len(set(CLASS_DISPLAY_ORDER)) == 15  # no duplicates
+def test_class_display_order_has_all_16_classes_black_then_red_then_hand_then_board_region():
+    assert len(CLASS_DISPLAY_ORDER) == 16
+    assert len(set(CLASS_DISPLAY_ORDER)) == 16  # no duplicates
     assert CLASS_DISPLAY_ORDER[:7] == [
         "black_pawn", "black_rook", "black_cannon", "black_horse",
         "black_elephant", "black_advisor", "black_king",
@@ -84,3 +93,4 @@ def test_class_display_order_has_all_15_classes_black_then_red_then_hand():
         "red_elephant", "red_advisor", "red_king",
     ]
     assert CLASS_DISPLAY_ORDER[14] == "hand"
+    assert CLASS_DISPLAY_ORDER[15] == "board_region"

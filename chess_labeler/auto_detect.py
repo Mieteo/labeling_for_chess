@@ -47,9 +47,9 @@ MODEL_LABELS: tuple[str, ...] = (
 )
 
 # FEN-style letter -> this tool's classes.txt class name. Index 14 ('0') is
-# the model's internal "board region" channel, not a piece -- it is
-# intentionally absent from this table and must never be mapped to any
-# class (not `hand`, not anything else).
+# the model's internal "board region" channel, not a piece -- it maps to the
+# 16th Digital-only class `board_region` (yeu_cau_tu_app_ky_nhan.md section
+# 3.2), never to `hand` or anything else.
 MODEL_LABEL_TO_CLASS_NAME: dict[str, str] = {
     "n": "black_horse",
     "b": "black_elephant",
@@ -65,9 +65,10 @@ MODEL_LABEL_TO_CLASS_NAME: dict[str, str] = {
     "B": "red_elephant",
     "C": "red_cannon",
     "P": "red_pawn",
+    "0": "board_region",
 }
 
-NON_PIECE_MODEL_LABEL = "0"
+BOARD_REGION_MODEL_LABEL = "0"
 
 
 @dataclasses.dataclass
@@ -215,10 +216,11 @@ def _un_letterbox(
     b: _RawBox, scale: float, pad_x: float, pad_y: float, img_w: int, img_h: int
 ) -> Detection | None:
     label = MODEL_LABELS[b.class_idx] if 0 <= b.class_idx < len(MODEL_LABELS) else None
-    class_name = MODEL_LABEL_TO_CLASS_NAME.get(label) if label is not None else None
+    class_name = MODEL_LABEL_TO_CLASS_NAME.get(label)
     if class_name is None:
-        # Either the non-piece "board region" channel (index 14, '0') or an
-        # out-of-range index -- never surfaced as a suggestion.
+        # Only reachable for an out-of-range class_idx (never happens given
+        # the model's fixed 15-channel output) -- never surfaced as a
+        # suggestion.
         return None
 
     cx = (b.cx - pad_x) / scale
