@@ -467,6 +467,7 @@ class MainWindow(QMainWindow):
         self._open_directory(Path(directory))
 
     def _open_directory(self, directory: Path) -> None:
+        self._cancel_running_auto_detect_batch()
         self._image_dir = directory
         self._app_settings.setValue(_LAST_DIR_SETTINGS_KEY, str(directory))
         self._classes = yolo_io.load_or_create_classes(directory)
@@ -1196,6 +1197,7 @@ class MainWindow(QMainWindow):
             boxes_to_save.append(yolo_io.Box.from_pixel_rect(class_id, r.x(), r.y(), r.width(), r.height(), w, h))
 
         yolo_io.save_boxes(self._current_image_path, boxes_to_save)
+        suggestions.discard_suggestions(self._current_image_path)
         self._boxes_dirty = False
         if not self._save_metadata_if_dirty():
             # The YOLO save has already succeeded. Keep only the metadata
@@ -1225,6 +1227,7 @@ class MainWindow(QMainWindow):
             if resp != QMessageBox.StandardButton.Yes:
                 return
         yolo_io.save_boxes(self._current_image_path, [])
+        suggestions.discard_suggestions(self._current_image_path)
         self._boxes_dirty = False
         self._save_metadata_if_dirty()
         self._sync_dirty_state()
@@ -1683,7 +1686,15 @@ class MainWindow(QMainWindow):
         if not self._confirm_leave_current_image():
             event.ignore()
             return
+        self._cancel_running_auto_detect_batch()
+        event.accept()
+
+    def _cancel_running_auto_detect_batch(self) -> None:
+        """Stop and join any in-flight batch worker before the directory it
+        was scanning stops being the open one (window close, or switching to
+        a different directory) -- otherwise its progress dialog and finish
+        callback keep firing against whatever directory is open by the time
+        it wraps up."""
         if self._auto_detect_worker is not None and self._auto_detect_worker.isRunning():
             self._auto_detect_worker.cancel()
             self._auto_detect_worker.wait()
-        event.accept()
