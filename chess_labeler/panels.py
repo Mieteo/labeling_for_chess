@@ -246,8 +246,6 @@ class BoxListPanel(QWidget):
         list_widget.clear()
         for box in items:
             label = box.class_name or "(chưa gán lớp)"
-            if not box.confirmed:
-                label = f"[gợi ý] {label}"
             item = QListWidgetItem(label)
             item.setForeground(class_color(box.class_name))
             list_widget.addItem(item)
@@ -263,6 +261,10 @@ class BoxListPanel(QWidget):
             list_widget.blockSignals(True)
             list_widget.setCurrentRow(idx)
             list_widget.blockSignals(False)
+
+    def review_order(self) -> list[BoxItem]:
+        """Return boxes in the same black-first order used by the lists."""
+        return [*self._black_items, *self._red_items]
 
     def _on_clicked(self, list_widget: QListWidget, item: QListWidgetItem) -> None:
         items = self._black_items if list_widget is self._black_list else self._red_items

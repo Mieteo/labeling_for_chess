@@ -71,6 +71,31 @@ def test_paint_and_bounding_rect_do_not_crash_for_a_box_glued_to_the_image_corne
         _render(box)
 
 
+def test_selected_label_is_large_and_stays_inside_the_image():
+    _ensure_qapp()
+    bounds = QRectF(0, 0, 200, 200)
+    box = BoxItem(QRectF(80, 80, 40, 40), "red_rook", confirmed=True, image_bounds=bounds)
+    box.setSelected(True)
+
+    label_rect = box._selected_label_rect()
+    assert not label_rect.isEmpty()
+    assert bounds.contains(label_rect)
+    assert label_rect.width() > box.rect().width()
+    assert box.boundingRect().contains(label_rect)
+    _render(box)
+
+
+def test_selected_label_chooses_another_side_when_box_touches_image_edge():
+    _ensure_qapp()
+    bounds = QRectF(0, 0, 200, 200)
+    for rect in (QRectF(80, 0, 40, 40), QRectF(160, 80, 40, 40), QRectF(80, 160, 40, 40)):
+        box = BoxItem(rect, "black_cannon", confirmed=True, image_bounds=bounds)
+        box.setSelected(True)
+        label_rect = box._selected_label_rect()
+        assert bounds.contains(label_rect)
+        _render(box)
+
+
 def test_corner_hotkeys_store_raw_image_coordinates_and_overlay_tracks_zoom():
     app = _ensure_qapp()
     canvas = ImageCanvas()
@@ -123,6 +148,56 @@ def test_corner_hotkey_maps_the_actual_pointer_through_zoom_and_pan():
         assert abs(observed[0].y() - target.y()) <= 1.0
     finally:
         canvas.close()
+
+
+def test_zoom_to_board_region_and_reset_to_original_size():
+    _ensure_qapp()
+    canvas = ImageCanvas()
+    canvas.resize(400, 300)
+    pixmap = QPixmap(1000, 800)
+    pixmap.fill()
+    canvas.load_image(pixmap)
+    canvas.show()
+    QApplication.processEvents()
+    try:
+        canvas.add_box_item(QRectF(200, 150, 600, 400), "board_region", confirmed=False)
+        assert canvas.zoom_to_board_region() is True
+        assert canvas.current_scale() > 0
+        canvas.reset_to_original_size()
+        assert canvas.current_scale() == 1.0
+    finally:
+        canvas.close()
+
+
+def test_zoom_to_board_region_without_box_is_noop():
+    _ensure_qapp()
+    canvas = ImageCanvas()
+    pixmap = QPixmap(100, 100)
+    pixmap.fill()
+    canvas.load_image(pixmap)
+    assert canvas.zoom_to_board_region() is False
+
+
+def test_selection_overlay_can_be_toggled():
+    _ensure_qapp()
+    canvas = ImageCanvas()
+    assert canvas.selection_overlay_visible() is True
+    assert canvas.toggle_selection_overlay() is False
+    assert canvas.toggle_selection_overlay() is True
+
+
+def test_selection_overlay_is_applied_to_selected_box_and_can_be_hidden():
+    _ensure_qapp()
+    canvas = ImageCanvas()
+    canvas.load_image(QPixmap(200, 200))
+    box = canvas.add_box_item(QRectF(40, 40, 60, 60), "red_elephant", confirmed=True, select=True)
+
+    _render(box)
+    canvas.set_selection_overlay_visible(False)
+    assert box._selection_overlay_visible is False
+    _render(box)
+    canvas.set_selection_overlay_visible(True)
+    assert box._selection_overlay_visible is True
 
 
 # ---------------------------------------------------------------------

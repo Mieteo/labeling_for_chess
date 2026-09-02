@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressDialog,
     QPushButton,
+    QSplitter,
     QSizePolicy,
     QStatusBar,
     QTabWidget,
@@ -184,6 +185,9 @@ class MainWindow(QMainWindow):
         annotation_layout = QVBoxLayout(annotation_tab)
         annotation_layout.setContentsMargins(6, 6, 6, 6)
         annotation_layout.setSpacing(6)
+        group_splitter = QSplitter(Qt.Orientation.Vertical, annotation_tab)
+        group_splitter.setObjectName("annotationGroupSplitter")
+        group_splitter.setChildrenCollapsible(False)
 
         boxes_group = QGroupBox("Các box", annotation_tab)
         boxes_group.setObjectName("boxesGroup")
@@ -192,7 +196,8 @@ class MainWindow(QMainWindow):
         self._box_list_panel = BoxListPanel(boxes_group)
         self._box_list_panel.setMinimumHeight(110)
         boxes_layout.addWidget(self._box_list_panel)
-        annotation_layout.addWidget(boxes_group)
+        boxes_group.setMinimumHeight(140)
+        group_splitter.addWidget(boxes_group)
         self._box_list_panel.boxActivated.connect(self._canvas.select_box)
 
         assist_group = QGroupBox("Gán lớp & hỗ trợ phát hiện", annotation_tab)
@@ -305,7 +310,8 @@ class MainWindow(QMainWindow):
         clear_btn.clicked.connect(self._clear_unconfirmed_suggestions)
         assist_layout.addWidget(clear_btn, 6, 3)
         assist_layout.setColumnStretch(4, 1)
-        annotation_layout.addWidget(assist_group)
+        assist_group.setMinimumHeight(180)
+        group_splitter.addWidget(assist_group)
 
         self._board_editor = XiangqiBoardEditor(self)
         self._board_editor.boardChanged.connect(self._on_board_changed)
@@ -319,7 +325,13 @@ class MainWindow(QMainWindow):
         metadata_layout = QVBoxLayout(metadata_group)
         metadata_layout.setContentsMargins(6, 6, 6, 6)
         metadata_layout.addWidget(self._metadata_panel)
-        annotation_layout.addWidget(metadata_group, 1)
+        metadata_group.setMinimumHeight(220)
+        group_splitter.addWidget(metadata_group)
+        group_splitter.setStretchFactor(0, 1)
+        group_splitter.setStretchFactor(1, 1)
+        group_splitter.setStretchFactor(2, 2)
+        group_splitter.setSizes([180, 260, 620])
+        annotation_layout.addWidget(group_splitter, 1)
 
         fen_tab = QWidget(self._right_tabs)
         fen_tab.setObjectName("fenTab")
@@ -395,8 +407,7 @@ class MainWindow(QMainWindow):
 
         toolbar.addSeparator()
 
-        draw_action = QAction("Vẽ box (W)", self)
-        draw_action.setShortcut(QKeySequence("W"))
+        draw_action = QAction("Vẽ box", self)
         draw_action.triggered.connect(self._enter_draw_mode)
         toolbar.addAction(draw_action)
 
@@ -572,28 +583,48 @@ class MainWindow(QMainWindow):
                 QRectF(left, top, w, h), class_name=name, confirmed=True, emit_modified=False
             )
 
-        # Pending auto-detect suggestions from a batch run (see
-        # yeu_cau_tu_app_ky_nhan.md section 3.4): seed the canvas as
-        # unconfirmed boxes, then consume (delete) the sidecar -- exactly
-        # like every other suggestion source in this tool, an unconfirmed
-        # box that is never explicitly confirmed and saved is not persisted.
-        for pending in suggestions.load_and_consume_suggestions(path):
+        # Batch auto-detect boxes are editable labels waiting to be saved. Keep
+        # their internal pending state so rerunning auto-detect can replace
+        # them, while the box list intentionally displays them like labels.
+        pending_boxes = suggestions.load_and_consume_suggestions(path)
+        existing_piece_rects = [
+            (b.rect().x(), b.rect().y(), b.rect().width(), b.rect().height())
+            for b in self._canvas.box_items()
+            if b.class_name != BOARD_REGION_CLASS
+        ]
+        accepted_pending = 0
+        for pending in pending_boxes:
             left = (pending.xc - pending.w / 2) * pixmap.width()
             top = (pending.yc - pending.h / 2) * pixmap.height()
             w = pending.w * pixmap.width()
             h = pending.h * pixmap.height()
+            detection = auto_detect.Detection(
+                left + w / 2, top + h / 2, w, h, pending.class_name, pending.score
+            )
+            if any(
+                auto_detect.detection_matches_rect(detection, rect, DEFAULT_AUTO_DETECT_IOU_THRESHOLD)
+                for rect in existing_piece_rects
+            ):
+                continue
             self._canvas.add_box_item(
                 QRectF(left, top, w, h), class_name=pending.class_name, confirmed=False, emit_modified=False
             )
+            accepted_pending += 1
+
+        duplicates_removed = self._deduplicate_current_boxes()
 
         self._undo_stack.clear()
         self._redo_stack.clear()
         self._pending_drag_snapshot = None
         self._corner_undo_stack.clear()
         self._corner_redo_stack.clear()
-        self._boxes_dirty = False
+        self._boxes_dirty = bool(accepted_pending or duplicates_removed)
         self._metadata_dirty = False
-        self._dirty = False
+        self._dirty = self._boxes_dirty
+        if duplicates_removed:
+            self.statusBar().showMessage(
+                f"Đã ẩn {duplicates_removed} box trùng; hãy lưu để cập nhật file nhãn.", 5000
+            )
 
         # "Apply conditions to next" only fills a genuinely new sidecar; it
         # never silently changes tags a user already stored for this image.
@@ -608,6 +639,7 @@ class MainWindow(QMainWindow):
 
         self._file_list_panel.set_current_index(index)
         self._refresh_box_list()
+        self._select_initial_review_box()
         self._canvas.fit_to_window()
         self._canvas.setFocus()
         self._update_window_title()
@@ -1177,24 +1209,23 @@ class MainWindow(QMainWindow):
             return False
 
         items = self._canvas.box_items()
-        # An unconfirmed suggestion is silently dropped from the .txt no
-        # matter which branch below runs (never-dirty fast path: nothing at
-        # all gets written for it; dirty path: it's filtered out of
-        # boxes_to_save) -- without this warning, "the AI got it right, so
-        # I'll just save" looks like Save does nothing, when it actually
-        # means "save discarded every unreviewed box and, if none were
-        # confirmed, may have just written an empty .txt over real
-        # suggestions."
-        unconfirmed = [b for b in items if not b.confirmed]
-        if unconfirmed:
+        suggestions_to_confirm = [b for b in items if not b.confirmed]
+        if suggestions_to_confirm and self._image_mode == image_mode.DIGITAL:
+            # In Digital mode, Save means the reviewer accepted the current
+            # auto-detect suggestions. Promote them here so suggestions
+            # loaded from a batch sidecar are also written (they are not
+            # marked dirty when first loaded onto the canvas).
+            for item in suggestions_to_confirm:
+                item.confirmed = True
+                item.update()
+            self._boxes_dirty = True
+        elif suggestions_to_confirm:
+            # Physical/circle-detect keeps its original explicit-confirmation
+            # workflow; the fast Digital review workflow above is intentional.
             resp = QMessageBox.warning(
                 self,
                 "Còn gợi ý chưa xác nhận",
-                f"{len(unconfirmed)} box gợi ý (auto-detect/circle-detect) CHƯA được xác nhận -- "
-                "nếu lưu bây giờ, các box này sẽ KHÔNG được ghi vào .txt và sẽ mất khi bạn rời "
-                "khỏi ảnh này.\n\nHãy xác nhận từng box trước (Enter giữ nguyên lớp model, hoặc "
-                "phím vai trò / Ctrl+H / Ctrl+B để đổi lớp), rồi lưu lại -- hoặc bấm 'Lưu' nếu "
-                "bạn chắc chắn muốn bỏ qua các box này.",
+                f"{len(suggestions_to_confirm)} box gợi ý chưa được xác nhận. Nếu lưu, các box này sẽ bị bỏ qua. Vẫn lưu?",
                 QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Cancel,
                 QMessageBox.StandardButton.Cancel,
             )
@@ -1307,7 +1338,11 @@ class MainWindow(QMainWindow):
     def _update_window_title(self) -> None:
         name = self._current_image_path.name if self._current_image_path else "(chưa mở thư mục)"
         star = "*" if self._dirty else ""
-        self.setWindowTitle(f"Xiangqi Labeler - {name}{star}")
+        if 0 <= self._current_index < len(self._images):
+            progress = f" ({self._current_index + 1}/{len(self._images)})"
+        else:
+            progress = ""
+        self.setWindowTitle(f"Xiangqi Labeler - {name}{star}{progress}")
 
     def _refresh_box_list(self) -> None:
         self._box_list_panel.set_boxes(self._canvas.box_items())
@@ -1315,6 +1350,54 @@ class MainWindow(QMainWindow):
         # now grouped/sorted by class, a box can also change row entirely
         # right after being assigned a class, so re-sync the highlight.
         self._box_list_panel.select_box(self._canvas.selected_box())
+
+    def _select_initial_review_box(self) -> None:
+        boxes = self._box_list_panel.review_order()
+        self._canvas.select_box(boxes[0] if boxes else None)
+
+    def _move_review_box(self, offset: int) -> None:
+        boxes = self._box_list_panel.review_order()
+        if not boxes:
+            self.statusBar().showMessage("Ảnh chưa có box để review.", 1500)
+            return
+        current = self._canvas.selected_box()
+        index = boxes.index(current) if current in boxes else (0 if offset > 0 else len(boxes) - 1)
+        next_index = index + offset
+        if not (0 <= next_index < len(boxes)):
+            self.statusBar().showMessage("Đã ở box đầu/cuối.", 1200)
+            return
+        box = boxes[next_index]
+        self._canvas.select_box(box)
+
+    def _deduplicate_current_boxes(self) -> int:
+        """Remove overlapping piece labels and keep only one board region."""
+        kept_piece_rects: list[tuple[float, float, float, float]] = []
+        board_kept = False
+        removed = 0
+        for box in list(self._canvas.box_items()):
+            rect = box.rect()
+            if box.class_name == BOARD_REGION_CLASS:
+                if board_kept:
+                    self._canvas.remove_box(box)
+                    removed += 1
+                else:
+                    board_kept = True
+                continue
+            detection = auto_detect.Detection(
+                rect.center().x(), rect.center().y(), rect.width(), rect.height(), box.class_name or "", 0.0
+            )
+            if any(
+                auto_detect.detection_matches_rect(detection, kept, self._iou_spin.value())
+                for kept in kept_piece_rects
+            ):
+                self._canvas.remove_box(box)
+                removed += 1
+                continue
+            kept_piece_rects.append((rect.x(), rect.y(), rect.width(), rect.height()))
+        if removed:
+            self._mark_dirty()
+            self._refresh_box_list()
+        return removed
 
     # ------------------------------------------------------------------
     # Undo / redo (per-image snapshot stacks)
@@ -1496,6 +1579,7 @@ class MainWindow(QMainWindow):
             circles = circle_detect.radius_guided(image_bgr, self._reference_radius_px, self._tolerance_spin.value())
 
         self._push_undo(self._snapshot())
+        self._deduplicate_current_boxes()
         self._canvas.clear_unconfirmed_suggestions()
 
         confirmed = [(b.rect().center().x(), b.rect().center().y(), max(b.rect().width(), b.rect().height()) / 2)
@@ -1571,18 +1655,31 @@ class MainWindow(QMainWindow):
         self._push_undo(self._snapshot())
         self._canvas.clear_unconfirmed_suggestions()
         bounds = self._canvas.image_bounds()
+        existing_piece_rects = [
+            (b.rect().x(), b.rect().y(), b.rect().width(), b.rect().height())
+            for b in self._canvas.box_items()
+            if b.class_name != BOARD_REGION_CLASS
+        ]
         added = 0
         for d in detections:
             rect = QRectF(d.cx - d.w / 2, d.cy - d.h / 2, d.w, d.h).intersected(bounds)
             if rect.width() < 2 or rect.height() < 2:
                 continue
+            if any(
+                auto_detect.detection_matches_rect(
+                    d, (r[0], r[1], r[2], r[3]), self._iou_spin.value()
+                )
+                for r in existing_piece_rects
+            ):
+                continue
             self._canvas.add_box_item(rect, class_name=d.class_name, confirmed=False)
+            existing_piece_rects.append((rect.x(), rect.y(), rect.width(), rect.height()))
             added += 1
 
         self._mark_dirty()
         self._refresh_box_list()
         self._save_session_state()
-        self.statusBar().showMessage(f"Auto-detect: {added} gợi ý.", 3000)
+        self.statusBar().showMessage(f"Auto-detect: đã gán {added} nhãn, chưa lưu.", 3000)
 
     def _run_auto_detect_batch(self) -> None:
         if self._image_dir is None or not self._images:
@@ -1619,6 +1716,21 @@ class MainWindow(QMainWindow):
         worker.finishedBatch.connect(lambda done, skipped: self._on_auto_detect_batch_finished(done, skipped, targets))
         progress.canceled.connect(worker.cancel)
         worker.start()
+
+    def _save_and_go_to_next_board(self) -> None:
+        """Save the current image, advance once, then frame the next board."""
+        if self._current_image_path is None or not self._save_current_image():
+            return
+        next_index = self._current_index + 1
+        if next_index >= len(self._images):
+            self.statusBar().showMessage("Đã lưu; đây là ảnh cuối cùng.", 2000)
+            return
+        self._go_to_index(next_index)
+        if self._current_index == next_index:
+            if self._canvas.zoom_to_board_region():
+                self.statusBar().showMessage("Đã lưu, chuyển ảnh kế tiếp và zoom vào board.", 2000)
+            else:
+                self.statusBar().showMessage("Đã lưu và chuyển ảnh kế tiếp; ảnh chưa có board_region.", 2500)
 
     def _choose_auto_detect_batch_targets(self) -> list[Path] | None:
         """Ask whether batch auto-detect should cover only images without a
@@ -1713,6 +1825,51 @@ class MainWindow(QMainWindow):
                     focus, (QLineEdit, QTextEdit)
                 ):
                     self._run_auto_detect_current()
+                    return True
+
+            if key == Qt.Key.Key_Z and not ctrl_held and not other_modifiers_held:
+                if QApplication.activeModalWidget() is None and not isinstance(
+                    focus, (QLineEdit, QTextEdit)
+                ):
+                    if shift_held:
+                        self._canvas.fit_to_window()
+                        self.statusBar().showMessage("Đã thu nhỏ ảnh về vừa cửa sổ.", 1500)
+                    elif self._canvas.zoom_to_board_region():
+                        self.statusBar().showMessage("Đã zoom vào vùng board.", 1500)
+                    else:
+                        self.statusBar().showMessage("Ảnh chưa có box board_region để zoom.", 2000)
+                    return True
+
+            if key == Qt.Key.Key_X and shift_held and not ctrl_held and not other_modifiers_held:
+                if QApplication.activeModalWidget() is None and not isinstance(
+                    focus, (QLineEdit, QTextEdit)
+                ):
+                    self._canvas.reset_to_original_size()
+                    self.statusBar().showMessage("Đã đưa ảnh về tỉ lệ gốc 1:1.", 1500)
+                    return True
+
+            if key == Qt.Key.Key_Space and not modifiers:
+                if QApplication.activeModalWidget() is None and not isinstance(
+                    focus, (QLineEdit, QTextEdit)
+                ):
+                    self._save_and_go_to_next_board()
+                    return True
+
+            if key == Qt.Key.Key_Period and not modifiers:
+                if QApplication.activeModalWidget() is None and not isinstance(
+                    focus, (QLineEdit, QTextEdit)
+                ):
+                    visible = self._canvas.toggle_selection_overlay()
+                    self.statusBar().showMessage(
+                        f"Lớp phủ chọn box: {'bật' if visible else 'tắt'}.", 1500
+                    )
+                    return True
+
+            if key in (Qt.Key.Key_Q, Qt.Key.Key_W) and not modifiers:
+                if QApplication.activeModalWidget() is None and not isinstance(
+                    focus, (QLineEdit, QTextEdit)
+                ):
+                    self._move_review_box(-1 if key == Qt.Key.Key_Q else 1)
                     return True
 
             # `hand` has no color, so it keeps its own Ctrl+H shortcut --

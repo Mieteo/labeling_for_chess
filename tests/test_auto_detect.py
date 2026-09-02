@@ -147,6 +147,30 @@ def test_decode_and_nms_per_class_deduplicates_overlaps_and_filters_threshold():
     assert by_class["board_region"].score == pytest.approx(0.99)
 
 
+def test_cross_class_overlap_keeps_highest_scoring_piece_but_preserves_board_region():
+    detections = [
+        auto_detect.Detection(100, 100, 40, 60, "red_pawn", 0.9),
+        auto_detect.Detection(101, 101, 40, 60, "red_elephant", 0.8),
+        auto_detect.Detection(100, 100, 200, 200, "board_region", 0.99),
+    ]
+
+    result = auto_detect._deduplicate_piece_detections(detections, iou_threshold=0.45)
+
+    assert {d.class_name for d in result} == {"red_pawn", "board_region"}
+
+
+def test_cross_class_boxes_with_same_center_but_low_iou_are_still_deduplicated():
+    detections = [
+        auto_detect.Detection(100, 100, 80, 80, "black_pawn", 0.9),
+        auto_detect.Detection(100, 100, 25, 25, "black_horse", 0.8),
+    ]
+
+    result = auto_detect._deduplicate_piece_detections(detections, iou_threshold=0.45)
+
+    assert len(result) == 1
+    assert result[0].class_name == "black_pawn"
+
+
 @pytest.mark.skipif(not _LOCAL_MODEL_PATH.exists(), reason="local .onnx model not present on this machine")
 def test_real_model_smoke_run_returns_valid_class_names():
     detector = auto_detect.AutoDetector(str(_LOCAL_MODEL_PATH))

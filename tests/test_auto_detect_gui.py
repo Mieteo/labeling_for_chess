@@ -142,27 +142,13 @@ def test_auto_detect_current_image_adds_unconfirmed_suggestions_with_class(main_
     assert boxes[0].confirmed is False
 
 
-def test_auto_detect_suggestion_excluded_until_confirmed_then_saved(main_window, tmp_path, monkeypatch):
+def test_save_accepts_auto_detect_suggestion_without_extra_confirmation(main_window, tmp_path):
     d = _digital_dataset(tmp_path)
     main_window._open_directory(d)
     detection = auto_detect.Detection(cx=100, cy=80, w=40, h=60, class_name="red_cannon", score=0.83)
     main_window._auto_detector = _FakeDetector([detection])
     main_window._model_path_edit.setText("fake.onnx")
     main_window._run_auto_detect_current()
-
-    # Saving past an unconfirmed suggestion now warns first (answered here
-    # as "save anyway") -- the suggestion must still come out excluded.
-    monkeypatch.setattr(
-        QMessageBox, "warning", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Save)
-    )
-    main_window._save_current_image()
-    assert yolo_io.load_boxes(main_window._current_image_path) == []  # unconfirmed -> not saved
-
-    box = main_window._canvas.box_items()[0]
-    assert box.class_name == "red_cannon" and box.confirmed is False
-    main_window._canvas.select_box(box)  # suggestions aren't auto-selected, same as circle-detect
-    _press_key(main_window._canvas, Qt.Key.Key_Return)  # confirm, keeping the model's class
-    assert box.confirmed is True
 
     main_window._save_current_image()
     saved = yolo_io.load_boxes(main_window._current_image_path)
@@ -187,6 +173,40 @@ def test_auto_detect_rerun_clears_previous_unconfirmed_suggestions(main_window, 
     assert boxes[0].class_name == "black_pawn"
 
 
+def test_auto_detect_current_does_not_add_detection_over_existing_saved_box(main_window, tmp_path):
+    main_window._open_directory(_digital_dataset(tmp_path))
+    main_window._canvas.add_box_item(QRectF(80, 60, 40, 40), class_name="black_pawn", confirmed=True)
+    duplicate = auto_detect.Detection(cx=100, cy=80, w=40, h=40, class_name="black_horse", score=0.9)
+    main_window._auto_detector = _FakeDetector([duplicate])
+    main_window._model_path_edit.setText("fake.onnx")
+
+    main_window._run_auto_detect_current()
+
+    assert len(main_window._canvas.box_items()) == 1
+    assert main_window._canvas.box_items()[0].class_name == "black_pawn"
+
+
+def test_opening_image_removes_persisted_overlapping_boxes(main_window, tmp_path):
+    d = _digital_dataset(tmp_path)
+    image_path = d / "d0001.png"
+    classes = yolo_io.load_or_create_classes(d, DEFAULT_CLASSES_DIGITAL)
+    duplicate_boxes = [
+        yolo_io.Box.from_pixel_rect(classes.index("black_pawn"), 80, 60, 40, 40, 400, 300),
+        yolo_io.Box.from_pixel_rect(classes.index("red_elephant"), 80, 60, 40, 40, 400, 300),
+        yolo_io.Box.from_pixel_rect(classes.index("board_region"), 20, 20, 300, 240, 400, 300),
+        yolo_io.Box.from_pixel_rect(classes.index("board_region"), 20, 20, 300, 240, 400, 300),
+    ]
+    yolo_io.save_boxes(image_path, duplicate_boxes)
+
+    main_window._open_directory(d)
+    main_window._go_to_index(0)
+
+    boxes = main_window._canvas.box_items()
+    assert len(boxes) == 2
+    assert sum(box.class_name == "board_region" for box in boxes) == 1
+    assert main_window._boxes_dirty is True
+
+
 # ---------------------------------------------------------------------
 # Pending suggestions sidecar is picked up on open, and consumed
 # ---------------------------------------------------------------------
@@ -209,6 +229,12 @@ def test_pending_suggestions_sidecar_loaded_as_unconfirmed_on_open(main_window, 
     assert boxes[0].confirmed is False
     # Consumed -- reopening the same image must not duplicate it.
     assert not suggestions.has_pending_suggestions(image_path)
+
+    # Save accepts a sidecar-loaded suggestion even though loading it did not
+    # mark the canvas dirty.
+    assert main_window._save_current_image() is True
+    assert len(yolo_io.load_boxes(image_path)) == 1
+    assert main_window._canvas.box_items()[0].confirmed is True
 
 
 # ---------------------------------------------------------------------
@@ -387,3 +413,28 @@ def test_shift_d_does_not_fire_while_typing_in_a_text_field(qapp, main_window, t
     QTest.keyClick(notes_field, Qt.Key.Key_D, Qt.KeyboardModifier.ShiftModifier)
 
     assert main_window._canvas.box_items() == []
+
+
+def test_review_starts_at_first_black_box_and_qw_navigate(main_window, tmp_path):
+    main_window._open_directory(_digital_dataset(tmp_path))
+    first_black = main_window._canvas.add_box_item(
+        QRectF(20, 20, 30, 30), class_name="black_pawn", confirmed=True
+    )
+    second_black = main_window._canvas.add_box_item(
+        QRectF(80, 20, 30, 30), class_name="black_rook", confirmed=True
+    )
+    red_box = main_window._canvas.add_box_item(
+        QRectF(140, 20, 30, 30), class_name="red_pawn", confirmed=True
+    )
+    main_window._refresh_box_list()
+    main_window._select_initial_review_box()
+
+    review_order = main_window._box_list_panel.review_order()
+    assert review_order[:3] == [first_black, second_black, red_box]
+    assert main_window._canvas.selected_box() is first_black
+    QTest.keyClick(main_window._canvas, Qt.Key.Key_W)
+    assert main_window._canvas.selected_box() is second_black
+    QTest.keyClick(main_window._canvas, Qt.Key.Key_W)
+    assert main_window._canvas.selected_box() is red_box
+    QTest.keyClick(main_window._canvas, Qt.Key.Key_Q)
+    assert main_window._canvas.selected_box() is second_black

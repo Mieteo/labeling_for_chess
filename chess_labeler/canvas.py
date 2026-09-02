@@ -28,6 +28,10 @@ from .key_shortcuts import BOARD_REGION_CLASS, display_label_for_class
 HANDLE_SCREEN_SIZE = 9.0  # px, kept constant on screen regardless of zoom
 LABEL_FONT_SCREEN_PX = 9.0  # class-label glyph size, kept constant on screen
 LABEL_PADDING_SCREEN_PX = 2.0
+SELECTED_LABEL_FONT_SCREEN_PX = 16.0
+SELECTED_LABEL_PADDING_SCREEN_PX = 6.0
+SELECTED_LABEL_GAP_SCREEN_PX = 5.0
+SELECTED_LABEL_BORDER_SCREEN_PX = 1.0
 
 # `board_region` spans nearly the whole board and overlaps every piece box on
 # top of it -- see yeu_cau_tu_app_ky_nhan.md section 1. Left at the default
@@ -130,6 +134,7 @@ class BoxItem(QGraphicsRectItem):
         super().__init__(rect)
         self._class_name: str | None = None
         self.confirmed = confirmed
+        self._selection_overlay_visible = True
         self.image_bounds = image_bounds
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
         self.setAcceptHoverEvents(True)
@@ -151,13 +156,22 @@ class BoxItem(QGraphicsRectItem):
 
     @class_name.setter
     def class_name(self, value: str | None) -> None:
+        self.prepareGeometryChange()
         self._class_name = value
         self._sync_z_value()
 
     def itemChange(self, change, value):  # noqa: N802 (Qt override)
+        if change == QGraphicsItem.GraphicsItemChange.ItemSelectedChange:
+            # The selected label is part of boundingRect(), so announce the
+            # geometry change before Qt switches the selection state.
+            self.prepareGeometryChange()
         if change == QGraphicsItem.GraphicsItemChange.ItemSelectedHasChanged:
             self._sync_z_value()
         return super().itemChange(change, value)
+
+    def set_selection_overlay_visible(self, visible: bool) -> None:
+        self._selection_overlay_visible = bool(visible)
+        self.update()
 
     def _sync_z_value(self) -> None:
         if self._class_name != BOARD_REGION_CLASS:
@@ -199,12 +213,24 @@ class BoxItem(QGraphicsRectItem):
 
     def boundingRect(self) -> QRectF:  # noqa: N802 (Qt override)
         s = self.handle_scene_size()
-        return self.rect().adjusted(-s, -s, s, s).united(self._label_text_rect())
+        return (
+            self.rect()
+            .adjusted(-s, -s, s, s)
+            .united(self._label_text_rect())
+            .united(self._selected_label_rect())
+        )
 
     def _label_font(self) -> QFont:
         inv_scale = self.handle_scene_size() / HANDLE_SCREEN_SIZE
         font = QFont()
         font.setPixelSize(max(1, round(LABEL_FONT_SCREEN_PX * inv_scale)))
+        font.setBold(True)
+        return font
+
+    def _selected_label_font(self) -> QFont:
+        inv_scale = self.handle_scene_size() / HANDLE_SCREEN_SIZE
+        font = QFont()
+        font.setPixelSize(max(1, round(SELECTED_LABEL_FONT_SCREEN_PX * inv_scale)))
         font.setBold(True)
         return font
 
@@ -223,13 +249,56 @@ class BoxItem(QGraphicsRectItem):
         text_width = max(metrics.horizontalAdvance(text), 1.0)
         return QRectF(top_left.x() + pad, top_left.y() + pad, text_width, text_height)
 
+    def _selected_label_rect(self) -> QRectF:
+        """Return a large, in-image label rectangle for the selected box."""
+        text = self.class_name
+        if not self.isSelected() or not text:
+            return QRectF()
+
+        inv_scale = self.handle_scene_size() / HANDLE_SCREEN_SIZE
+        pad = SELECTED_LABEL_PADDING_SCREEN_PX * inv_scale
+        gap = SELECTED_LABEL_GAP_SCREEN_PX * inv_scale
+        font = self._selected_label_font()
+        metrics = QFontMetricsF(font)
+        label_width = max(metrics.horizontalAdvance(text) + 2 * pad, 1.0)
+        label_height = max(metrics.height() + 2 * pad, 1.0)
+        box = self.rect()
+        cx = (box.left() + box.right()) / 2
+        cy = (box.top() + box.bottom()) / 2
+        candidates = (
+            QRectF(cx - label_width / 2, box.top() - gap - label_height, label_width, label_height),
+            QRectF(cx - label_width / 2, box.bottom() + gap, label_width, label_height),
+            QRectF(box.right() + gap, cy - label_height / 2, label_width, label_height),
+            QRectF(box.left() - gap - label_width, cy - label_height / 2, label_width, label_height),
+        )
+        bounds = self.image_bounds
+        for candidate in candidates:
+            if bounds.contains(candidate):
+                return candidate
+
+        # If the box is so close to multiple edges that no side fits, keep
+        # the label inside the image and choose the side with the most room.
+        def visible_area(candidate: QRectF) -> float:
+            clipped = candidate.intersected(bounds)
+            return max(0.0, clipped.width()) * max(0.0, clipped.height())
+
+        candidate = max(candidates, key=visible_area)
+        width = min(candidate.width(), max(bounds.width(), 1.0))
+        height = min(candidate.height(), max(bounds.height(), 1.0))
+        left = min(max(candidate.left(), bounds.left()), bounds.right() - width)
+        top = min(max(candidate.top(), bounds.top()), bounds.bottom() - height)
+        return QRectF(left, top, width, height)
+
     def paint(self, painter: QPainter, option: QStyleOptionGraphicsItem, widget: QWidget | None = None) -> None:  # noqa: N802
         color = class_color(self.class_name)
         pen = QPen(color)
-        pen.setWidth(3 if self.isSelected() else 2)
+        selected_overlay = self.isSelected() and self._selection_overlay_visible
+        pen.setWidth(5 if selected_overlay else (3 if self.isSelected() else 2))
         pen.setStyle(Qt.PenStyle.SolidLine if self.confirmed else Qt.PenStyle.DashLine)
         painter.setPen(pen)
         painter.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+        if selected_overlay:
+            painter.fillRect(self.rect(), QColor(30, 120, 255, 128))
         painter.drawRect(self.rect())
 
         if self.isSelected():
@@ -239,6 +308,7 @@ class BoxItem(QGraphicsRectItem):
                 painter.drawRect(h_rect)
 
         self._paint_class_label(painter)
+        self._paint_selected_label(painter)
 
     def _paint_class_label(self, painter: QPainter) -> None:
         text = display_label_for_class(self.class_name)
@@ -247,6 +317,29 @@ class BoxItem(QGraphicsRectItem):
         painter.setFont(self._label_font())
         painter.setPen(_label_text_color(self.class_name))
         painter.drawText(self._label_text_rect(), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, text)
+
+    def _paint_selected_label(self, painter: QPainter) -> None:
+        text = self.class_name
+        label_rect = self._selected_label_rect()
+        if not text or label_rect.isEmpty():
+            return
+
+        inv_scale = self.handle_scene_size() / HANDLE_SCREEN_SIZE
+        border_width = max(1.0, SELECTED_LABEL_BORDER_SCREEN_PX * inv_scale)
+        radius = 3.0 * inv_scale
+        painter.save()
+        painter.setFont(self._selected_label_font())
+        painter.setPen(QPen(_label_text_color(self.class_name), border_width))
+        painter.setBrush(QBrush(QColor(255, 255, 255)))
+        painter.drawRoundedRect(label_rect, radius, radius)
+        painter.setPen(_label_text_color(self.class_name))
+        pad = SELECTED_LABEL_PADDING_SCREEN_PX * inv_scale
+        painter.drawText(
+            label_rect.adjusted(pad, pad, -pad, -pad),
+            Qt.AlignmentFlag.AlignCenter,
+            text,
+        )
+        painter.restore()
 
     def hoverMoveEvent(self, event) -> None:  # noqa: N802
         if self.isSelected():
@@ -317,6 +410,7 @@ class BoxItem(QGraphicsRectItem):
             max_top = max(b.top(), b.bottom() - h)
             new_left = min(max(new_left, b.left()), max_left)
             new_top = min(max(new_top, b.top()), max_top)
+            self.prepareGeometryChange()
             self.setRect(QRectF(new_left, new_top, w, h))
         else:
             left, top, right, bottom = pr.left(), pr.top(), pr.right(), pr.bottom()
@@ -329,8 +423,8 @@ class BoxItem(QGraphicsRectItem):
                 top += delta.y()
             if h in (Handle.BOTTOM_LEFT, Handle.BOTTOM, Handle.BOTTOM_RIGHT):
                 bottom += delta.y()
+            self.prepareGeometryChange()
             self.setRect(self._clamp_edges(left, top, right, bottom))
-        self.prepareGeometryChange()
         event.accept()
 
     def mouseReleaseEvent(self, event: QGraphicsSceneMouseEvent) -> None:  # noqa: N802
@@ -412,6 +506,7 @@ class ImageCanvas(QGraphicsView):
         self._draw_start_scene: QPointF | None = None
         self._temp_rect_item: QGraphicsRectItem | None = None
         self._current_scale = 1.0
+        self._selection_overlay_visible = True
         self._last_scene_pos: QPointF | None = None
         self._corner_items: dict[str, CornerMarkerItem] = {}
 
@@ -482,6 +577,7 @@ class ImageCanvas(QGraphicsView):
         emit_modified: bool = True,
     ) -> BoxItem:
         item = BoxItem(QRectF(rect), class_name, confirmed, self.image_bounds())
+        item.set_selection_overlay_visible(self._selection_overlay_visible)
         item.on_drag_begin = lambda: self.on_drag_begin() if self.on_drag_begin else None
         item.on_drag_end = self._handle_item_drag_end
         self._scene.addItem(item)
@@ -537,6 +633,19 @@ class ImageCanvas(QGraphicsView):
     def current_scale(self) -> float:
         return self._current_scale
 
+    def selection_overlay_visible(self) -> bool:
+        return self._selection_overlay_visible
+
+    def set_selection_overlay_visible(self, visible: bool) -> None:
+        self._selection_overlay_visible = bool(visible)
+        for box in self.box_items():
+            box.set_selection_overlay_visible(self._selection_overlay_visible)
+        self.viewport().update()
+
+    def toggle_selection_overlay(self) -> bool:
+        self.set_selection_overlay_visible(not self._selection_overlay_visible)
+        return self._selection_overlay_visible
+
     def set_zoom(self, scale: float) -> None:
         scale = max(0.05, min(scale, 20.0))
         self._current_scale = scale
@@ -555,6 +664,33 @@ class ImageCanvas(QGraphicsView):
         self._current_scale = self.transform().m11()
         self._scene.handle_scene_size = HANDLE_SCREEN_SIZE / self._current_scale
         self._update_corner_marker_sizes()
+
+    def zoom_to_board_region(self) -> bool:
+        """Fit the board_region box plus a safety margin to the viewport."""
+        board_boxes = [b for b in self.box_items() if b.class_name == "board_region"]
+        if not board_boxes or self._pixmap_item is None:
+            return False
+        board = max(board_boxes, key=lambda item: item.rect().width() * item.rect().height())
+        board_rect = board.rect()
+        # Pieces sitting on the outer intersections extend beyond the board
+        # region itself. Keep roughly one half-piece of breathing room so the
+        # edge pieces remain fully visible after zooming.
+        margin_x = board_rect.width() * 0.08
+        margin_y = board_rect.height() * 0.08
+        zoom_rect = board_rect.adjusted(-margin_x, -margin_y, margin_x, margin_y)
+        self.fitInView(zoom_rect, Qt.AspectRatioMode.KeepAspectRatio)
+        self._current_scale = self.transform().m11()
+        self._scene.handle_scene_size = HANDLE_SCREEN_SIZE / max(self._current_scale, 0.0001)
+        self.centerOn(board.rect().center())
+        self._update_corner_marker_sizes()
+        return True
+
+    def reset_to_original_size(self) -> None:
+        """Show the image at 1:1 source-pixel scale."""
+        if self._pixmap_item is None:
+            return
+        self.set_zoom(1.0)
+        self.centerOn(self.image_bounds().center())
 
     def fit_to_width(self) -> None:
         if self._pixmap_item is None or self._image_size[0] == 0:

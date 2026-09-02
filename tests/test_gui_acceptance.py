@@ -14,7 +14,7 @@ from PySide6.QtGui import QKeyEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QMessageBox
 
-from chess_labeler import metadata, yolo_io
+from chess_labeler import image_mode, metadata, yolo_io
 import chess_labeler.main_window as main_window_module
 from chess_labeler.main_window import MainWindow
 
@@ -75,6 +75,19 @@ def test_reopening_app_auto_opens_last_used_folder(qapp, isolated_settings, labe
     assert win2._image_dir == labelimg_dataset
     win2.close()
     qapp.removeEventFilter(win2)
+
+
+def test_window_title_includes_current_image_progress(main_window, labelimg_dataset):
+    main_window._open_directory(labelimg_dataset)
+
+    # The fixture resumes at 0005.jpg, which is image 5 in the six-image
+    # session; moving to the first image must update the same title field.
+    assert "5/6" in main_window.windowTitle()
+    assert "0005.jpg" in main_window.windowTitle()
+
+    main_window._go_to_index(0)
+    assert "1/6" in main_window.windowTitle()
+    assert "0001.jpg" in main_window.windowTitle()
 
 
 def test_fresh_app_with_no_saved_folder_opens_nothing(qapp, isolated_settings):
@@ -159,7 +172,7 @@ def test_ctrl_h_assigns_hand(main_window, labelimg_dataset):
     assert box.class_name == "hand"
 
 
-def test_save_round_trip_and_suggestions_excluded(main_window, labelimg_dataset, monkeypatch):
+def test_save_round_trip_and_suggestions_are_accepted_on_save(main_window, labelimg_dataset):
     main_window._open_directory(labelimg_dataset)
     assert main_window._current_image_path.name == "0005.jpg"
 
@@ -172,38 +185,15 @@ def test_save_round_trip_and_suggestions_excluded(main_window, labelimg_dataset,
     assert len(saved) == 1
     assert saved[0].class_id == main_window._classes.index("red_cannon")
 
-    # An unconfirmed suggestion must never make it into the saved .txt --
-    # saving past the "you still have unconfirmed suggestions" warning
-    # (answered here as "save anyway") must still exclude it.
-    main_window._canvas.add_box_item(QRectF(200, 200, 30, 30), class_name=None, confirmed=False)
-    monkeypatch.setattr(
-        QMessageBox, "warning", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Save)
-    )
-    main_window._save_current_image()
-    saved_again = yolo_io.load_boxes(labelimg_dataset / "0005.jpg")
-    assert len(saved_again) == 1
-
-
-def test_saving_with_unconfirmed_suggestions_warns_first(main_window, labelimg_dataset, monkeypatch):
-    # Regression test: silently saving over unconfirmed suggestions used to
-    # look like "Save does nothing" (nothing gets written for them) or,
-    # worse, overwrite a previously-correct .txt with an empty one if none
-    # of the boxes on screen happened to be confirmed yet.
+def test_saving_auto_detect_suggestions_marks_image_labeled(main_window, labelimg_dataset):
     main_window._open_directory(labelimg_dataset)
     assert main_window._current_image_path.name == "0005.jpg"
+    main_window._apply_image_mode(image_mode.DIGITAL)
     main_window._canvas.add_box_item(QRectF(50, 50, 40, 40), class_name="red_cannon", confirmed=False)
 
-    warned = []
-    monkeypatch.setattr(
-        QMessageBox,
-        "warning",
-        staticmethod(lambda *a, **k: (warned.append(True), QMessageBox.StandardButton.Cancel)[1]),
-    )
-    result = main_window._save_current_image()
-
-    assert warned  # the user was actually told about the unconfirmed box
-    assert result is False
-    assert not yolo_io.has_label(labelimg_dataset / "0005.jpg")  # cancelling writes nothing
+    assert main_window._save_current_image() is True
+    assert yolo_io.has_label(labelimg_dataset / "0005.jpg")
+    assert main_window._canvas.box_items()[0].confirmed is True
 
 
 def test_resume_advances_after_labeling_a_fresh_window(qapp, isolated_settings, labelimg_dataset):

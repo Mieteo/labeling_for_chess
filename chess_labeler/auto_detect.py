@@ -3,10 +3,8 @@ Xiangqi piece detector (e.g. the source app's
 ``xiangqi_piece_detector_v1.onnx``) purely for *inference* -- see
 yeu_cau_tu_app_ky_nhan.md section 3. No training/fine-tuning happens here.
 
-Detections are only *suggestions*, exactly like circle_detect.py: turning
-one into a real, saved box is a separate, explicit user action handled in
-main_window.py (reusing the same confirm/reassign/delete mechanics already
-built for circle-detect suggestions).
+Detections are placed as ordinary editable boxes and become persistent when
+the user saves the image.
 
 Model contract (confirmed against the real .onnx file, see section 3.1):
 
@@ -17,7 +15,8 @@ Model contract (confirmed against the real .onnx file, see section 3.1):
   (cx, cy, w, h, in letterboxed-640 pixel units) + 15 class-score channels.
   Ultralytics YOLOv8 single-tensor format: no separate objectness channel,
   class scores are already probabilities (no sigmoid needed on decode).
-- NMS runs per-class (never a single global NMS across all classes).
+- NMS runs per-class first, then overlapping piece boxes from different
+  classes are deduplicated. ``board_region`` is excluded from that pass.
 """
 
 from __future__ import annotations
@@ -122,7 +121,7 @@ class AutoDetector:
         boxes = _nms_per_class(boxes, iou_threshold)
         img_h, img_w = image_bgr.shape[:2]
         detections = [_un_letterbox(b, scale, pad_x, pad_y, img_w, img_h) for b in boxes]
-        return [d for d in detections if d is not None]
+        return _deduplicate_piece_detections([d for d in detections if d is not None], iou_threshold)
 
 
 @dataclasses.dataclass
@@ -193,6 +192,52 @@ def _iou(a: _RawBox, b: _RawBox) -> float:
     area_b = max(0.0, bx1 - bx0) * max(0.0, by1 - by0)
     union = area_a + area_b - inter
     return inter / union if union > 0 else 0.0
+
+
+def _detection_iou(a: Detection, b: Detection) -> float:
+    def corners(box: Detection) -> tuple[float, float, float, float]:
+        return (box.cx - box.w / 2, box.cy - box.h / 2, box.cx + box.w / 2, box.cy + box.h / 2)
+
+    ax0, ay0, ax1, ay1 = corners(a)
+    bx0, by0, bx1, by1 = corners(b)
+    inter = max(0.0, min(ax1, bx1) - max(ax0, bx0)) * max(0.0, min(ay1, by1) - max(ay0, by0))
+    area_a = max(0.0, ax1 - ax0) * max(0.0, ay1 - ay0)
+    area_b = max(0.0, bx1 - bx0) * max(0.0, by1 - by0)
+    union = area_a + area_b - inter
+    return inter / union if union > 0 else 0.0
+
+
+def _same_piece(a: Detection, b: Detection, iou_threshold: float) -> bool:
+    if _detection_iou(a, b) > iou_threshold:
+        return True
+    # Different-class predictions can have noticeably different box sizes,
+    # making IoU deceptively low even when their centers are on the same
+    # piece. A piece box is roughly one grid-cell wide, so this threshold is
+    # still well below the distance between adjacent intersections.
+    center_distance = ((a.cx - b.cx) ** 2 + (a.cy - b.cy) ** 2) ** 0.5
+    return center_distance <= 0.60 * min(a.w, a.h, b.w, b.h)
+
+
+def detection_matches_rect(
+    detection: Detection,
+    rect: tuple[float, float, float, float],
+    iou_threshold: float,
+) -> bool:
+    """Return whether a detection occupies the same piece position as a pixel rect."""
+    x, y, w, h = rect
+    existing = Detection(x + w / 2, y + h / 2, w, h, "", 0.0)
+    return _same_piece(detection, existing, iou_threshold)
+
+
+def _deduplicate_piece_detections(detections: list[Detection], iou_threshold: float) -> list[Detection]:
+    """Keep the highest-scoring class when one piece gets competing labels."""
+    pieces = [d for d in detections if d.class_name != "board_region"]
+    board_boxes = [d for d in detections if d.class_name == "board_region"]
+    kept: list[Detection] = []
+    for detection in sorted(pieces, key=lambda d: d.score, reverse=True):
+        if all(not _same_piece(detection, existing, iou_threshold) for existing in kept):
+            kept.append(detection)
+    return kept + board_boxes
 
 
 def _nms_per_class(boxes: list[_RawBox], iou_threshold: float) -> list[_RawBox]:
